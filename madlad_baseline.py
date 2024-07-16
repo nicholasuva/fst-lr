@@ -5,8 +5,9 @@ from transformers import T5ForConditionalGeneration, T5Tokenizer, pipeline
 #from tmx.structural import tmx
 #from tmx import load_tmx
 from datasets import load_dataset, concatenate_datasets, DatasetDict
+from evaluate import evaluator
 from nltk.translate.bleu_score import sentence_bleu
-import torch
+#import torch
 from torchinfo import summary
 print('all imports done')
 
@@ -164,6 +165,21 @@ def single_sent_bleu_eval(ref_sent, candidate_sent):
 
 #my_load_dataset('kde4', 'en', 'it')
 
+def my_evaluate(
+        data,
+        model
+):
+    task_evaluator = evaluator("translation")
+    eval_results = task_evaluator.compute(
+        model_or_pipeline=model,
+        data=data
+        #metric='BLEU'?????
+    )
+    print(eval_results)
+    return
+
+
+
 
 def main():
     ds = my_load_dataset('kde4', 'en', 'it')
@@ -193,7 +209,8 @@ def main():
 #print(torch.cuda.is_available())
 #main()
 
-
+if __name__ == "__main__":
+    main()
 
 
 #load_model_in_pipeline()
