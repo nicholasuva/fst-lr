@@ -4,7 +4,7 @@ from transformers import T5ForConditionalGeneration, T5Tokenizer, pipeline
 #from translate.storage.tmx import tmxfile
 #from tmx.structural import tmx
 #from tmx import load_tmx
-from datasets import load_dataset, concatenate_datasets, DatasetDict
+from datasets import load_dataset, concatenate_datasets, DatasetDict, Dataset
 from evaluate import evaluator
 from nltk.translate.bleu_score import sentence_bleu
 #import torch
@@ -22,7 +22,7 @@ def load_model():
     tokenizer = T5Tokenizer.from_pretrained(model_name)
     return model, tokenizer
 
-load_model()
+#load_model()
 
 
 def load_model_in_pipeline():
@@ -166,13 +166,15 @@ def single_sent_bleu_eval(ref_sent, candidate_sent):
 #my_load_dataset('kde4', 'en', 'it')
 
 def my_evaluate(
-        data,
-        model
+        model,
+        data
 ):
     task_evaluator = evaluator("translation")
     eval_results = task_evaluator.compute(
         model_or_pipeline=model,
-        data=data
+        data=data,
+        input_column='en',
+        label_column='it'
         #metric='BLEU'?????
     )
     print(eval_results)
@@ -183,13 +185,30 @@ def my_evaluate(
 
 def main():
     ds = my_load_dataset('kde4', 'en', 'it')
+    sanity_check_data = ds['test'].train_test_split(test_size=0.0004)
+    print(type(sanity_check_data))
+    print(sanity_check_data)
+    print(type(sanity_check_data['test']))
+    print(sanity_check_data['test'])
+    scds = sanity_check_data['test']
+    print('num test sents:\t'+str(sanity_check_data['test'].num_rows))
     model_checkpoint = 'jbochi/madlad400-3b-mt'
     translator = pipeline('translation', model=model_checkpoint)
-    
     total_bleu = 0.0
-    sanity_check_data = ds['test'].train_test_split(test_size=0.0004)
-    print(sanity_check_data['test'].num_rows)
+    
     total_sents = sanity_check_data['test'].num_rows
+
+    #just testing this eval fct
+    test_dict = {'en':[], 'it':[]}
+    for pair in scds:
+        test_dict['en'].append('<2it> ' + pair['translation']['en'])
+        test_dict['it'].append(pair['translation']['it'])
+    test_ds = Dataset.from_dict(test_dict)
+    my_evaluate(translator, test_ds)
+    return
+    #end of testing eval fct
+
+
     for pair in sanity_check_data['test']:
         print(pair)
         en_sent = pair['translation']['en']
