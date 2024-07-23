@@ -116,6 +116,42 @@ def my_load_dataset(dataset, lang1, lang2):
     #print(three_way_split_ds['train'][1]['translation'])
     return three_way_split_ds
 
+#note to self, I think  when I am combining text from different datasets I should perhaps do preprocessing first, given that I may want to say how many sentences are from which sources
+#I may need to do this differently
+#I will now look for good methods of dataset preprocessing for translation corpora
+#some general good things to do: throw out short sentences, throw out long sentences, throw out urls,
+#throw out sentences where there is a very big gap / mismatch in the length of the sequences in the two languages
+# I think I will just write and run my own preprocessing thingy
+#can I simply delete an elem from a dataset in situ or do i need to copy it over to another dataset?
+# I think it is notgoing to work in situ we have to make a new one
+
+def check_for_url(sent: str):
+    url_txt = {'https://', 'www.', 'WWW.', '.com', '.COM', 'javascript', 'Javascript', '@'}
+    for item in url_txt:
+        if item in sent:
+            return True
+    return False
+
+def check_for_length(sent: str, min_len=5, max_len=25):
+    #this is hacky
+    space_ct = 0
+    for char in sent:
+        if char == ' ':
+            space_ct += 1
+    if space_ct < min_len or space_ct > max_len:
+        return True
+    return False
+
+
+
+def clean_dataset(dataset):
+    #the IDs of sentence pairs to be discarded
+    exclude_ids = set()
+    for pair in dataset:
+        pass
+    return
+        
+
 
 def load_combine_save_dataset(dataset_names: list, lang1: str, lang2: str):
     dataset_list = []
@@ -126,7 +162,6 @@ def load_combine_save_dataset(dataset_names: list, lang1: str, lang2: str):
         for i in range(len(dataset_list)-1):
             assert dataset_list[i].features.type == dataset_list[i+1].features.type
     combined_dataset = concatenate_datasets(dataset_list)
-
     #print(raw_dataset)
     train_test = combined_dataset.train_test_split(test_size=0.2)
     valid_test = train_test['test'].train_test_split(test_size=0.5)
@@ -142,9 +177,9 @@ def load_combine_save_dataset(dataset_names: list, lang1: str, lang2: str):
     three_way_split_ds.save_to_disk(ds_filename)
     return three_way_split_ds
 
-def load_or_create_my_dataset(lang1, lang2, dataset_names=[]):
+def load_or_create_my_dataset(lang1: str, lang2: str, dataset_names=[]):
     ds_filename = lang1 + '-' + lang2 + '-' + 'combined.hf'
-    #check if it exists locally
+    #check if the combined dataset already exists locally
     try:
         this_dataset = load_dataset(ds_filename)
     except:
@@ -181,10 +216,26 @@ def my_evaluate(
     return
 
 
+#what do I really need to actually get this fully running?
+#probably these things 
+#1 data loader
+#2 evaluator
+#something?
+#tbh I should really get some better preprocessing pipeline stuff too
+#how  to save dataset locally
+
+
 
 
 def main():
     ds = my_load_dataset('kde4', 'en', 'it')
+    print(ds)
+    for pair in ds['train']:
+        #if check_for_length(pair['translation']['en']) or check_for_length(pair['translation']['it']):
+        if check_for_url(pair['translation']['en']) or check_for_url(pair['translation']['it']):
+            print(pair)
+        #print(pair)
+    return
     sanity_check_data = ds['test'].train_test_split(test_size=0.0004)
     print(type(sanity_check_data))
     print(sanity_check_data)
