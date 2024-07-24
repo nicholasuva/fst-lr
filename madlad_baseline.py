@@ -261,7 +261,8 @@ def check_for_length(sent: str, min_len=5, max_len=25):
 
 
 
-def clean_dataset(dataset, lang1, lang2):
+def clean_dataset(dataset_dict, lang1, lang2):
+    dataset = dataset_dict['train']
     #the IDs of sentence pairs to be discarded
     exclude_rows = set()
     for i in range(len(dataset)):
@@ -362,18 +363,27 @@ def single_sent_bleu_eval(ref_sent, candidate_sent):
 
 def my_evaluate(
         model,
-        data
+        test_dataset,
+        lang1,
+        lang2
 ):
+    
+    test_dict = {lang1:[], lang2:[]}
+    for pair in test_dataset:
+        test_dict[lang1].append('<2'+lang2+'> ' + pair['translation'][lang1])
+        test_dict[lang2].append(pair['translation'][lang2])
+    formatted_ds = Dataset.from_dict(test_dict)
+
     task_evaluator = evaluator("translation")
     eval_results = task_evaluator.compute(
         model_or_pipeline=model,
-        data=data,
-        input_column='en',
-        label_column='it'
+        data=formatted_ds,
+        input_column=lang1,
+        label_column=lang2
         #metric='BLEU'?????
     )
     print(eval_results)
-    return
+    return eval_results
 
 
 #what do I really need to actually get this fully running?
@@ -388,6 +398,20 @@ def my_evaluate(
 
 
 def main():
+    #july 24 testing the baseline loading and eval
+    se_test_ds = load_dataset('kde4', lang1='en', lang2='se', trust_remote_code=True)
+    print(se_test_ds)
+    cleaned = clean_dataset(se_test_ds, 'en', 'se')
+    print(cleaned)
+    split_ds = new_combine_and_split_datasets([cleaned], 'en', 'se')
+    print(split_ds)
+    model_checkpoint = 'jbochi/madlad400-3b-mt'
+    translator = pipeline('translation', model=model_checkpoint)
+    my_evaluate(translator, split_ds['test'], 'en', 'se')
+    return
+
+
+
     #testing which datasets to load
     test_loading_datasets(test_ds_list)
     return
@@ -472,3 +496,8 @@ if __name__ == "__main__":
 #THEN logging the info again
 #THEN combining them
 #THEN logging the info for the combined ds
+
+
+#wed july 24, I am going to first reimplement my own wrapper for BLEU, then run baseline evals
+#need to think about best logging practices
+#ideally save to file so I don't have to manually copy
