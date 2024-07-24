@@ -1,15 +1,34 @@
 #! /usr/bin/env python
 
 from transformers import T5ForConditionalGeneration, T5Tokenizer, pipeline
-#from translate.storage.tmx import tmxfile
-#from tmx.structural import tmx
-#from tmx import load_tmx
-from datasets import load_dataset, concatenate_datasets, DatasetDict, Dataset
+from datasets import load_dataset, concatenate_datasets, DatasetDict, Dataset, get_dataset_config_names
 from evaluate import evaluator
 from nltk.translate.bleu_score import sentence_bleu
 #import torch
 from torchinfo import summary
 print('all imports done')
+
+
+preproc_test_dict = {
+
+                            'id': [
+                                    1000,
+                                    1001,
+                                    1002,
+                                    1003,
+                                    1004,
+                                    1005
+                            ],
+                            'translation': [
+                                            {'en': 'Hi, my name is Nick and I am a student.', 'it': 'Ciao mi chiamo Nick e sono uno studente.'},
+                                            {'en': 'I like to study linguistics and various other topics.', 'it': 'Mi piace studiare la linguistica e varie altre materie.'},
+                                            {'en': 'You can reach me at my email address, which is test@testing.com', 'it': 'sono disponibile al mio indirizzio email, test@testing.com'},
+                                            {'en': 'javascript is my favorite language to code in', 'it': 'javascript e la mia lingua preferita per la informatica'},
+                                            {'en': 'too short', 'it': 'troppo breve',},
+                                            {'en': 'too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long too long', 'it': 'troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo troppo lungo'}
+                                        ]
+}
+
 
 def load_model():
     model_name = 'jbochi/madlad400-3b-mt'
@@ -24,13 +43,11 @@ def load_model():
 
 #load_model()
 
-
 def load_model_in_pipeline():
     model_checkpoint = 'jbochi/madlad400-3b-mt'
     translator = pipeline('translation', model=model_checkpoint, max_length=20)
     print(translator("<2it> Hello, my name is Nick, and I am a linguistics student."))
     return
-
 
 #trying to instantiate appropriate datasets
 #using this https://huggingface.co/docs/datasets/en/create_dataset
@@ -39,19 +56,14 @@ def gen_from_tmx(filepath):
     print('starting')
     #with open(filepath, 'rb') as source:
         #tmx_file = tmxfile(source, 'en', 'ga')
-
     tmx_file: tmx = load_tmx(filepath)
-
     print('file opened')
     #for node in tmx_file.unit_iter():
         #print(node.source, node.target)
-
     for tu in tmx_file.tus:
         for index, tuv in enumerate(tu.tuvs):
             print(tuv)
-        
     return
-
 
 def gen_from_raw_aligned(src_filename, trg_filename):
     #check num lines are same
@@ -61,9 +73,6 @@ def gen_from_raw_aligned(src_filename, trg_filename):
         trg_num_lines = sum(1 for _ in trg_file)
     if src_num_lines != trg_num_lines:
         raise ValueError('source and target language files do not have same number of lines')
-    
-
-
     with open(src_filename, 'r') as src_file:
         with open(trg_filename, 'r') as trg_file:
             pass
@@ -95,6 +104,15 @@ maybe QED? it's listed as QedAmara
 It seems like the full NLLB is not up there? only parts
 
 
+Looking at Huggingface
+language            corpora
+nb Norwegian Bokmal    paracrawl kde4 qed wikimedia
+fo Faroese             nllb xlent wikimatrix gnome
+fi Finnish             ccmatrix nllb   paracrawp hplt ccaligned
+se Northern Sami       kde4    wikimedia   tatoeba
+ga Irish               NLLB paracrawl ccmatrix hplt
+kw Cornish             tatoeba wikimedia   qed
+
 
 ok so
 basically
@@ -102,8 +120,94 @@ we take the dataset
 
 
 """
+test_ds_list = [
+                ['tatoeba', 'nb', 'en'],
+                ['tatoeba', 'fo', 'en'],
+                ['tatoeba', 'fi', 'en'],
+                ['tatoeba', 'se', 'en'],
+                ['tatoeba', 'ga', 'en'],
+                ['tatoeba', 'kw', 'en'],
+                ['opus_paracrawl', 'nb', 'en'],
+                ['opus_paracrawl', 'fo', 'en'],
+                ['opus_paracrawl', 'fi', 'en'],
+                ['opus_paracrawl', 'se', 'en'],
+                ['opus_paracrawl', 'ga', 'en'],
+                ['opus_paracrawl', 'kw', 'en'],
+                ['kde4', 'nb', 'en'],
+                ['kde4', 'fo', 'en'],
+                ['kde4', 'fi', 'en'],
+                ['kde4', 'se', 'en'],
+                ['kde4', 'ga', 'en'],
+                ['kde4', 'kw', 'en'],
+                ['qed_amara', 'nb', 'en'],
+                ['qed_amara', 'fo', 'en'],
+                ['qed_amara', 'fi', 'en'],
+                ['qed_amara', 'se', 'en'],
+                ['qed_amara', 'ga', 'en'],
+                ['qed_amara', 'kw', 'en']
+]
+"""
+,    
+                ['flores', 'nb', 'en'],
+                ['flores', 'fo', 'en'],
+                ['facebook/flores', 'fin_Latn', 'eng_Latn'],
+                ['flores', 'se', 'en'],
+                ['flores', 'ga', 'en'],
+                ['flores', 'kw', 'en']       
+]
+"""
+
+usable_databases = {
+                    'tatoeba': [
+                                ['en', 'nb'],
+                                ['en', 'fo'],
+                                ['en', 'fi'],
+                                ['en', 'se'],
+                                ['en', 'ga'],
+                                ['en', 'kw']         
+                    ],
+                    'kde4': [
+                                ['en', 'nb'],
+                                ['en', 'fi'],
+                                ['en', 'se'],
+                                ['en', 'ga']      
+                    ],
+                    'qed_amara': [
+                                ['en', 'nb'],
+                                ['en', 'fo'],
+                                ['en', 'fi'],
+                                ['en', 'ga'],
+                                ['en', 'kw']         
+                    ]      
+}
+
+
+def test_loading_datasets(dataset_and_lang_pair_list):
+    accessible_ds = []
+    for this_tuple in dataset_and_lang_pair_list:
+        ds_name = this_tuple[0]
+        lang1 = this_tuple[2]
+        lang2 = this_tuple[1]
+        try:
+            ds = load_dataset(ds_name, lang1=lang1, lang2=lang2, trust_remote_code=True)
+            this_tuple.append(ds.num_rows)
+            accessible_ds.append(this_tuple)
+            print(ds_name+'\t'+lang1+'\t'+lang2+'\t'+'Success')
+        except:
+            print(ds_name+'\t'+lang1+'\t'+lang2+'\t'+'Failure')
+    for this_tuple in accessible_ds:
+        ds_name = this_tuple[0]
+        lang1 = this_tuple[2]
+        lang2 = this_tuple[1]
+        print(ds_name+'\t'+lang1+'\t'+lang2+'\t'+'num_sents:'+'\t'+str(this_tuple[3]))
+    return accessible_ds
+
+
 
 def my_load_dataset(dataset, lang1, lang2):
+    """
+    DEPRECATED
+    """
     raw_dataset = load_dataset(dataset, lang1=lang1, lang2=lang2, trust_remote_code=True)
     #print(raw_dataset)
     train_test = raw_dataset['train'].train_test_split(test_size=0.2)
@@ -115,6 +219,19 @@ def my_load_dataset(dataset, lang1, lang2):
     })
     #print(three_way_split_ds['train'][1]['translation'])
     return three_way_split_ds
+
+
+def my_load_clean_one_dataset(dataset_name: str, lang1: str, lang2: str):
+    """
+    loads a single dataset, cleans it with simple preprocessing, prints num sentences before and after
+    returns cleaned dataset
+    """
+    raw_dataset = load_dataset(dataset_name, lang1=lang1, lang2=lang2, trust_remote_code=True)
+    print('----------------------------\n'+dataset_name+'\n--')
+    print('num sentences raw:\t'+str(len(raw_dataset)))
+    cleaned_dataset = clean_dataset(raw_dataset, lang1, lang2)
+    print('num sentences cleaned:\t'+str(len(cleaned_dataset)))
+    return cleaned_dataset
 
 #note to self, I think  when I am combining text from different datasets I should perhaps do preprocessing first, given that I may want to say how many sentences are from which sources
 #I may need to do this differently
@@ -144,16 +261,59 @@ def check_for_length(sent: str, min_len=5, max_len=25):
 
 
 
-def clean_dataset(dataset):
+def clean_dataset(dataset, lang1, lang2):
     #the IDs of sentence pairs to be discarded
-    exclude_ids = set()
-    for pair in dataset:
-        pass
-    return
+    exclude_rows = set()
+    for i in range(len(dataset)):
+        lang1_sent = dataset[i]['translation'][lang1]
+        lang2_sent = dataset[i]['translation'][lang2]
+        if (
+            check_for_length(lang1_sent) or
+            check_for_length(lang2_sent) or
+            check_for_url(lang1_sent) or
+            check_for_url(lang2_sent)
+        ):
+            exclude_rows.add(i)
+    dataset = dataset.select(
+        i for i in range(len(dataset))
+        if i not in exclude_rows
+    )
+    return dataset
         
+def new_combine_and_split_datasets(dataset_list: list, lang1: str, lang2: str, train_size=0.8, test_size=0.1, dev_size=0.1, to_save=True):
+    """
+    takes in a list of datasets, combines them, then splits into a train test dev split
+    saves the dataset locally and returns the dataset
+    """
+    #calculate split sizes
+    assert train_size + test_size + dev_size == 1.0
+    test_split_input = 1.0 - train_size
+    valid_split_input = test_size * (1.0 / test_split_input)
+
+
+    if len(dataset_list) > 1:
+        for i in range(len(dataset_list)-1):
+            assert dataset_list[i].features.type == dataset_list[i+1].features.type
+    combined_dataset = concatenate_datasets(dataset_list)
+    train_test = combined_dataset.train_test_split(test_size=test_split_input)
+    valid_test = train_test['test'].train_test_split(test_size=valid_split_input)
+    three_way_split_ds = DatasetDict({
+        'train': train_test['train'],
+        'test': valid_test['test'],
+        'dev': valid_test['train']
+    })
+    print(three_way_split_ds)
+    #save the dataset as I've processed it, locally
+    if to_save:
+        ds_filename = lang1 + '-' + lang2 + '-' + 'combined.hf'
+        three_way_split_ds.save_to_disk(ds_filename)
+    return three_way_split_ds
 
 
 def load_combine_save_dataset(dataset_names: list, lang1: str, lang2: str):
+    """
+    DEPRECATED
+    """
     dataset_list = []
     for dataset_name in dataset_names:
         raw_dataset = load_dataset(dataset_name, lang1=lang1, lang2=lang2, split='train', trust_remote_code=True)
@@ -228,9 +388,26 @@ def my_evaluate(
 
 
 def main():
-    ds = my_load_dataset('kde4', 'en', 'it')
+    #testing which datasets to load
+    test_loading_datasets(test_ds_list)
+    return
+
+
+
+
+    ds = Dataset.from_dict(preproc_test_dict)
+    #ds = ds.train_test_split(test_size=0)
+
+
+
+    #ds = my_load_dataset('kde4', 'en', 'it')
     print(ds)
-    for pair in ds['train']:
+    #for pair in ds['train']:
+    for pair in ds:
+        print(pair)
+    ds = clean_dataset(ds, 'en', 'it')
+    for pair in ds:
+        print(pair)
         #if check_for_length(pair['translation']['en']) or check_for_length(pair['translation']['it']):
         if check_for_url(pair['translation']['en']) or check_for_url(pair['translation']['it']):
             print(pair)
@@ -284,3 +461,14 @@ if __name__ == "__main__":
 
 
 #load_model_in_pipeline()
+
+
+
+
+#tue july 23 note - i need to actually sort out my data and my baselines
+# so what I need to do is write the fcts for FIRST taking in each ds in each lang pair, 
+#THEN logging the info for each
+#THEN preprocessing
+#THEN logging the info again
+#THEN combining them
+#THEN logging the info for the combined ds
