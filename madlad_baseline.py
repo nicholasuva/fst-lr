@@ -4,7 +4,7 @@ from transformers import T5ForConditionalGeneration, T5Tokenizer, pipeline
 from datasets import load_dataset, concatenate_datasets, DatasetDict, Dataset, get_dataset_config_names
 from evaluate import evaluator
 from nltk.translate.bleu_score import sentence_bleu
-#import torch
+from torch import cuda, device
 from torchinfo import summary
 print('all imports done')
 
@@ -398,16 +398,21 @@ def my_evaluate(
 
 
 def main():
+    print(cuda.device_count())
+    print(cuda.is_available())
+    #return
+
     #july 24 testing the baseline loading and eval
     se_test_ds = load_dataset('kde4', lang1='en', lang2='se', trust_remote_code=True)
-    print(se_test_ds)
+    #print(se_test_ds)
     cleaned = clean_dataset(se_test_ds, 'en', 'se')
-    print(cleaned)
+    #print(cleaned)
     split_ds = new_combine_and_split_datasets([cleaned], 'en', 'se')
-    print(split_ds)
-    model_checkpoint = 'jbochi/madlad400-3b-mt'
-    translator = pipeline('translation', model=model_checkpoint)
-    my_evaluate(translator, split_ds['test'], 'en', 'se')
+    #print(split_ds)
+    with device("cuda"):
+        model_checkpoint = 'jbochi/madlad400-3b-mt'
+        translator = pipeline('translation', model=model_checkpoint)
+        my_evaluate(translator, split_ds['test'], 'en', 'se')
     return
 
 
