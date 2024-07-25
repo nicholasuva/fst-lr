@@ -32,7 +32,7 @@ preproc_test_dict = {
 
 def load_model():
     model_name = 'jbochi/madlad400-3b-mt'
-    model = T5ForConditionalGeneration.from_pretrained(model_name, device_map="auto")
+    model = T5ForConditionalGeneration.from_pretrained(model_name)
     #print(model.get_input_embeddings())
     #print(model.get_output_embeddings())
     print(model.config)
@@ -364,6 +364,7 @@ def single_sent_bleu_eval(ref_sent, candidate_sent):
 def my_evaluate(
         model,
         test_dataset,
+        tokenizer,
         lang1,
         lang2
 ):
@@ -379,7 +380,8 @@ def my_evaluate(
         model_or_pipeline=model,
         data=formatted_ds,
         input_column=lang1,
-        label_column=lang2
+        label_column=lang2,
+        tokenizer=tokenizer
         #metric='BLEU'?????
     )
     print(eval_results)
@@ -408,11 +410,15 @@ def main():
     cleaned = clean_dataset(se_test_ds, 'en', 'se')
     #print(cleaned)
     split_ds = new_combine_and_split_datasets([cleaned], 'en', 'se')
-    #print(split_ds)
-    with device("cuda"):
-        model_checkpoint = 'jbochi/madlad400-3b-mt'
-        translator = pipeline('translation', model=model_checkpoint)
-        my_evaluate(translator, split_ds['test'], 'en', 'se')
+    print(split_ds)
+    model, tokenizer = load_model()
+    #with device("cuda"):
+    if True:
+        print("1")
+        #model_checkpoint = 'jbochi/madlad400-3b-mt'
+        #translator = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto")
+        #translator = pipeline('translation', model=model_checkpoint)
+        my_evaluate(model, split_ds['test'], tokenizer, 'en', 'se')
     return
 
 
