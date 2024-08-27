@@ -1,1 +1,5 @@
 test_file.txt
+*.hf
+*.pyc
+
+compare_langs.py
