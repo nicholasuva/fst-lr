@@ -97,7 +97,12 @@ def _compute_min_hash(element):
     index, data = element
     min_hash = get_min_hash([t for t in NON_ALPHA.split(data["content"]) if len(t.strip()) > 0])
     if min_hash is not None:
-        return (index, data["repo_name"], data["path"]), min_hash
+        #Nick Uva editing this to fit my dataset formatting
+        #original
+        #return (index, data["repo_name"], data["path"]), min_hash
+        #edited
+        return (index, 'placeholder_repo', 'placeholder_path'), min_hash
+
 
 
 def minhash_iter(dataset_iterator: Type[Dataset]):

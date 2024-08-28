@@ -1,4 +1,5 @@
 test_file.txt
+*_log.txt
 *.hf
 *.pyc
 
