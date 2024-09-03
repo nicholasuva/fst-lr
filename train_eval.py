@@ -3,7 +3,7 @@
 
 from transformers import Seq2SeqTrainer, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq
 from datasets import Dataset, DatasetDict
-
+from typing import Callable
 
 #some stuff that will be used everywhere perhaps
 model_checkpoint = 'jbochi/madlad400-3b-mt'
@@ -21,13 +21,13 @@ def create_preprocess_function(
         trg_lang: str,
         max_input_length: int = 25,
         max_target_length: int = 25
-    ) -> function:
+    ) -> Callable:
     """
     
     """
     def preprocess_function(
             dataset: Dataset
-        ) -> whatever:
+        ):
         """
 
         """
@@ -49,7 +49,7 @@ def load_tokenized_inputs(
     tokenizer: T5Tokenizer,
     src_lang: str,
     trg_lang: str,  
-    ) -> something:
+    ):
     """
     
     """
@@ -129,6 +129,10 @@ def finetune_and_eval(
     return
 
 def main() -> None:
+    #model = T5ForConditionalGeneration.from_pretrained(model_checkpoint)
+    tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
+    vocab = tokenizer.get_vocab()
+    print(vocab)
     return
 
 if __name__ == "__main__":

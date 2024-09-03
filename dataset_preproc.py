@@ -2,6 +2,7 @@ from datasets import load_dataset, concatenate_datasets, Dataset, DatasetDict
 from nltk.tokenize import word_tokenize
 #https://github.com/huggingface/transformers/blob/main/examples/research_projects/codeparrot/scripts/minhash_deduplication.py
 from minhash_deduplication import deduplicate_dataset
+from transformers import T5Tokenizer
 
 from io import TextIOWrapper
 
@@ -200,6 +201,91 @@ def my_dedupe_dataset(
     dataset_log_title = 'deduped'+'_'+lang1+'_'+lang2
     log_dataset_info(dataset_log_title, dataset, lang1, lang2, sink)
     return dataset
+
+def stitch_subword_tokens(
+        toks: list[str]
+        ):
+    """
+    takes in a list of tokens, tokenized by T5Tokenizer
+    such that the start of a new word has an underscore prepended
+    returns a list of tokens such that the length is the same as the input
+    all subword tokens have been replaced by the entire consituent word
+    the leading underscore has been stripped
+    the problem is that if I want to assign the morph tag of the full word
+    to each of the constituent subword tokens
+    I need to reconstitute the word
+    TODOneed to test this
+    """
+    surface_form_toks = []
+    buffer = ''
+    buffer_ct = 1
+    for i in range(len(toks)):
+        #if the token is the start of a full word
+        if toks[i][0] == '_':
+            if i != 0:
+                for j in range(buffer_ct):
+                    surface_form_toks.append(buffer[1:])
+            buffer = toks[i]
+            buffer_ct = 1
+        else:
+            buffer_ct += 1
+            buffer = buffer + toks[i]
+        if i == len(toks) - 1:
+            for j in range(buffer_ct):
+                surface_form_toks.append(buffer[1:])
+    assert len(toks) == len(surface_form_toks)
+    return surface_form_toks
+
+
+
+def add_morph_tags_to_sentence(
+        toks: list[str],
+        morph_dict: dict,
+        ) -> list[str]:
+    """
+    takes in a sentence and a morphological tag dict in that language
+    because T5Tokenizer often tokenizes parts of words, if a word has been split, 
+    this function will assign the tag for the whole word to oops oops oops
+    I forgot to stitch the word back together
+    first I need to create a second list 
+    do i need recursion lol
+    fuck fuck fuck
+    todoreplace the placeholder with singular noun tag
+    """
+    tags = []
+    for tok in toks:
+        if tok in morph_dict:
+            tag = morph_dict[tok]
+        else:
+            tag = 'placeholder'
+        tags.append(tag)
+    return tags
+    
+
+def add_morph_tags_to_dataset(
+        dataset: Dataset,
+        lang1: str,
+        lang2: str,
+        sink: TextIOWrapper,
+        tokenizer: T5Tokenizer
+        ) -> Dataset:
+    """
+    takes in a parallel text dataset
+    uses morphological tag dictionaries to create lists of tags for each sentence
+    
+    """
+    lang1_morph_dict = load_morph_dict(lang1)
+    lang2_morph_dict = load_morph_dict(lang2)
+    morph_tags = []
+    for pair in dataset['translation']:
+        lang1_toks = stitch_subword_tokens(tokenizer.tokenize(pair[lang1]))
+        lang2_toks = stitch_subword_tokens(tokenizer.tokenize(pair[lang2]))
+        lang1_tags = add_morph_tags_to_sentence(lang1_toks, lang1_morph_dict)
+        lang2_tags = add_morph_tags_to_sentence(lang2_toks, lang2_morph_dict)
+        this_morph_tag = {lang1: lang1_tags, lang2: lang2_tags}
+        morph_tags.append(this_morph_tag)
+    dataset = dataset.add_column('morph tags', morph_tags)
+
 
 def split_dataset(
         dataset: Dataset,
