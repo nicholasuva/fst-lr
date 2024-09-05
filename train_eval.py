@@ -1,8 +1,8 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
 
-from transformers import Seq2SeqTrainer, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq
-from datasets import Dataset, DatasetDict
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq
+from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Callable
 from torch import cuda, device
 
@@ -55,7 +55,7 @@ def load_tokenized_inputs(
     
     """
     preprocess_function = create_preprocess_function(tokenizer, src_lang, trg_lang)
-    datasetdict = datasets.load_from_disk('the name of the dataset')
+    datasetdict = load_from_disk(src_lang+'-'+trg_lang+'-combined.hf')
     tokenized_datasets = datasetdict.map(preprocess_function, batched=True)
     return tokenized_datasets
 
@@ -97,12 +97,18 @@ def finetune_and_eval(
     """
     
     """
+    if cuda.is_available():
+        this_device="cuda"
+        use_fp16=True
+    else:
+        this_device="cpu"
+        use_fp16=False
     model = T5ForConditionalGeneration.from_pretrained(model_checkpoint)
     tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
 
     batch_size = 16
     args = Seq2SeqTrainingArguments(
-        f"{model_name}-finetuned-{source_lang}-to-{target_lang}",
+        f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}",
         evaluation_strategy = "epoch",
         learning_rate=2e-5,
         per_device_train_batch_size=batch_size,
@@ -111,7 +117,7 @@ def finetune_and_eval(
         save_total_limit=3,
         num_train_epochs=1,
         predict_with_generate=True,
-        fp16=True,
+        fp16=use_fp16,
         push_to_hub=False,
     )#kind of copied from whole cloth, need to understand what this means
 
@@ -126,10 +132,6 @@ def finetune_and_eval(
         tokenizer=tokenizer,
         compute_metrics=compute_metrics
     )
-    if cuda.is_available():
-        this_device="cuda"
-    else:
-        this_device="cpu"
     with device(this_device):
         trainer.train()
     return
