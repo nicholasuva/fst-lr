@@ -98,7 +98,7 @@ def finetune_and_eval(
     
     """
     model = T5ForConditionalGeneration.from_pretrained(model_checkpoint)
-    tokenizer = T5Tokenizer(model_checkpoint)
+    tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
 
     batch_size = 16
     args = Seq2SeqTrainingArguments(

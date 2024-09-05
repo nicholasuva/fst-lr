@@ -4,3 +4,5 @@ test_file.txt
 *.pyc
 
 compare_langs.py
+lang-*/
+*-corpus.txt
