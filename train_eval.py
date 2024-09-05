@@ -4,6 +4,7 @@
 from transformers import Seq2SeqTrainer, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq
 from datasets import Dataset, DatasetDict
 from typing import Callable
+from torch import cuda, device
 
 #some stuff that will be used everywhere perhaps
 model_checkpoint = 'jbochi/madlad400-3b-mt'
@@ -125,14 +126,22 @@ def finetune_and_eval(
         tokenizer=tokenizer,
         compute_metrics=compute_metrics
     )
-    trainer.train()
+    if cuda.is_available():
+        this_device="cuda"
+    else:
+        this_device="cpu"
+    with device(this_device):
+        trainer.train()
     return
 
 def main() -> None:
     #model = T5ForConditionalGeneration.from_pretrained(model_checkpoint)
-    tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-    vocab = tokenizer.get_vocab()
-    print(vocab)
+    #tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
+    #vocab = tokenizer.get_vocab()
+    #print(vocab)
+    print(cuda.device_count())
+    print(cuda.is_available())
+    finetune_and_eval(model_checkpoint, 'en', 'se')
     return
 
 if __name__ == "__main__":
