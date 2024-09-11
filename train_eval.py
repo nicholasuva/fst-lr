@@ -109,38 +109,39 @@ def finetune_and_eval(
     else:
         this_device="cpu"
         use_fp16=False
-    model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto" torch_dtype=bfloat16)
-    tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-    print('model loaded')
-    #batch_size = 16
-    batch_size = 1
-    args = Seq2SeqTrainingArguments(
-        f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}",
-        evaluation_strategy = "epoch",
-        learning_rate=2e-5,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        gradient_accumulation_steps=4,
-        weight_decay=0.01,
-        save_total_limit=3,
-        num_train_epochs=1,
-        predict_with_generate=True,
-        fp16=use_fp16,
-        push_to_hub=False
-    )#kind of copied from whole cloth, need to understand what this means
-    args = Seq2SeqTrainingArguments(f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}")
-    tokenized_datasets = load_tokenized_inputs(tokenizer, src_lang, trg_lang)
-    data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
-    trainer = Seq2SeqTrainer(
-        model,
-        args,
-        train_dataset=tokenized_datasets['train'].train_test_split(test_size=0.0005)['test'],
-        eval_dataset=tokenized_datasets['test'].train_test_split(test_size=0.005)['test'], #or should this be dev? I never know ugh
-        data_collator = data_collator,
-        tokenizer=tokenizer,
-        compute_metrics=compute_metrics
-    )
     with device(this_device):
+        model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
+        tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
+        print('model loaded')
+        #batch_size = 16
+        batch_size = 1
+        args = Seq2SeqTrainingArguments(
+            f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}",
+            evaluation_strategy = "epoch",
+            learning_rate=2e-5,
+            per_device_train_batch_size=batch_size,
+            per_device_eval_batch_size=batch_size,
+            gradient_accumulation_steps=4,
+            weight_decay=0.01,
+            save_total_limit=3,
+            num_train_epochs=1,
+            predict_with_generate=True,
+            fp16=use_fp16,
+            push_to_hub=False
+        )#kind of copied from whole cloth, need to understand what this means
+        args = Seq2SeqTrainingArguments(f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}")
+        tokenized_datasets = load_tokenized_inputs(tokenizer, src_lang, trg_lang)
+        data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+        trainer = Seq2SeqTrainer(
+            model,
+            args,
+            train_dataset=tokenized_datasets['train'].train_test_split(test_size=0.0005)['test'],
+            eval_dataset=tokenized_datasets['test'].train_test_split(test_size=0.005)['test'], #or should this be dev? I never know ugh
+            data_collator = data_collator,
+            tokenizer=tokenizer,
+            compute_metrics=compute_metrics
+        )
+
         #trainer.evaluate()
         print('about to train')
         trainer.train()
