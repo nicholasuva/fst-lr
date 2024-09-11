@@ -4,7 +4,7 @@
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq
 from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Callable
-from torch import cuda, device, set_default_device, float16
+from torch import cuda, device, set_default_device, bfloat16
 from evaluate import evaluator
 import numpy as np
 
@@ -109,7 +109,7 @@ def finetune_and_eval(
     else:
         this_device="cpu"
         use_fp16=False
-    model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, torch_dtype=float16)
+    model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto" torch_dtype=bfloat16)
     tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
     print('model loaded')
     #batch_size = 16
