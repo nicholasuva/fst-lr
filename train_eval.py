@@ -4,10 +4,11 @@
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer
 from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Callable
-from torch import cuda, device, set_default_device, bfloat16
+from torch import cuda, device, set_default_device, Generator, bfloat16, float16
 from evaluate import evaluator
 import numpy as np
 import utils
+from peft import get_peft_model, LoraConfig, TaskType
 
 import psutil
 import resource
@@ -18,7 +19,7 @@ import resource
 
 
 def create_preprocess_function(
-        tokenizer: T5Tokenizer | AutoTokenizer,
+        tokenizer,
         model_scheme: str, 
         src_lang: str,
         trg_lang: str,
@@ -65,6 +66,7 @@ def load_tokenized_inputs(
     """
     preprocess_function = create_preprocess_function(tokenizer, 'NLLB', src_lang, trg_lang)
     datasetdict = load_from_disk(src_lang+'-'+trg_lang+'-combined.hf')
+    datasetdict.generator=Generator('cuda')
     tokenized_datasets = datasetdict.map(preprocess_function, batched=True)
     return tokenized_datasets
 
@@ -109,17 +111,22 @@ def finetune_and_eval(
     
     """
     if cuda.is_available():
-        this_device="cuda"
+        this_device="auto"
         use_fp16=True
     else:
         this_device="cpu"
         use_fp16=False
-    with device(this_device):
+    #with device(this_device):
+    if True:
+        peft_config = LoraConfig(
+                task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1, target_modules='xxxxxxx'
+                )
         if model_scheme == "MADLAD":
             model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
             tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
         if model_scheme == "NLLB":
-            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=float16)
+            model = get_peft_model(model, peft_config)
             tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
         print('model loaded')
         #batch_size = 16
@@ -140,6 +147,7 @@ def finetune_and_eval(
         )#kind of copied from whole cloth, need to understand what this means
         args = Seq2SeqTrainingArguments(f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}")
         tokenized_datasets = load_tokenized_inputs(tokenizer, src_lang, trg_lang)
+        tokenized_datasets.generator = Generator('cuda')
         data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
         trainer = Seq2SeqTrainer(
             model,
@@ -209,7 +217,7 @@ def main() -> None:
     """
     print(cuda.device_count())
     print(cuda.is_available())
-    set_default_device("cuda")
+    #set_default_device("cuda")
     #eval(model_checkpoint, 'se', 'en')
     #finetune_and_eval(model_checkpoint, 'en', 'se')
     finetune_and_eval('facebook/nllb-200-distilled-600M', 'NLLB', 'en', 'fi')
