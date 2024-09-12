@@ -1,28 +1,25 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
 
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer
 from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Callable
 from torch import cuda, device, set_default_device, bfloat16
 from evaluate import evaluator
 import numpy as np
-
+import utils
 
 import psutil
 import resource
 #some stuff that will be used everywhere perhaps
-model_checkpoint = 'jbochi/madlad400-3b-mt'
+#model_checkpoint = 'jbochi/madlad400-3b-mt'
 
-def create_tokenizer(
-        model_checkpoint: str
-    ) -> T5Tokenizer:
-    tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-    return tokenizer
+
 
 
 def create_preprocess_function(
-        tokenizer: T5Tokenizer,
+        tokenizer: T5Tokenizer | AutoTokenizer,
+        model_scheme: str, 
         src_lang: str,
         trg_lang: str,
         max_input_length: int = 25,
@@ -37,12 +34,19 @@ def create_preprocess_function(
         """
 
         """
-        prefix = '<2'+trg_lang+'> '
+        prefix = ''
+        if model_scheme == 'MADLAD':
+            prefix = '<2'+trg_lang+'> '
+        if model_scheme == 'NLLB':
+            prefix = utils.get_nllb_code(trg_lang) + ' ' #this is wrong I need prefix on the trg lang for nllb ugh wait maybe this is right
         inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
         targets = [(ex[trg_lang]) for ex in dataset['translation']]
         model_inputs = tokenizer(inputs, max_length=max_input_length, truncation=True)
         #does the t5tokenizer do this?
-        with tokenizer.as_target_tokenizer():
+        if model_scheme == 'MADLAD':
+            with tokenizer.as_target_tokenizer():
+                labels = tokenizer(targets, max_length=max_target_length, truncation=True)
+        if model_scheme == 'NLLB':
             labels = tokenizer(targets, max_length=max_target_length, truncation=True)
         model_inputs['labels'] = labels['input_ids']
         return model_inputs
@@ -59,7 +63,7 @@ def load_tokenized_inputs(
     """
     
     """
-    preprocess_function = create_preprocess_function(tokenizer, src_lang, trg_lang)
+    preprocess_function = create_preprocess_function(tokenizer, 'NLLB', src_lang, trg_lang)
     datasetdict = load_from_disk(src_lang+'-'+trg_lang+'-combined.hf')
     tokenized_datasets = datasetdict.map(preprocess_function, batched=True)
     return tokenized_datasets
@@ -97,6 +101,7 @@ def compute_metrics(
 
 def finetune_and_eval(
         model_checkpoint,
+        model_scheme: str,
         src_lang: str,
         trg_lang: str
     ) -> None:
@@ -110,8 +115,12 @@ def finetune_and_eval(
         this_device="cpu"
         use_fp16=False
     with device(this_device):
-        model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
-        tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
+        if model_scheme == "MADLAD":
+            model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
+            tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
+        if model_scheme == "NLLB":
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
+            tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
         print('model loaded')
         #batch_size = 16
         batch_size = 1
@@ -146,6 +155,9 @@ def finetune_and_eval(
         print('about to train')
         trainer.train()
     return
+
+
+
 
 def eval(
         model_checkpoint,
@@ -199,7 +211,8 @@ def main() -> None:
     print(cuda.is_available())
     set_default_device("cuda")
     #eval(model_checkpoint, 'se', 'en')
-    finetune_and_eval(model_checkpoint, 'en', 'se')
+    #finetune_and_eval(model_checkpoint, 'en', 'se')
+    finetune_and_eval('facebook/nllb-200-distilled-600M', 'NLLB', 'en', 'fi')
     return
 
 if __name__ == "__main__":

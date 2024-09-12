@@ -369,8 +369,10 @@ def preproc_dataset(
 
 
 def main():
-    split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'se')
-    save_dataset_dict(split_ds_dict, 'en', 'se')
+    #split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'se')
+    #save_dataset_dict(split_ds_dict, 'en', 'se')
+    split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'fi')
+    save_dataset_dict(split_ds_dict, 'en', 'fi')
     return
 
 
