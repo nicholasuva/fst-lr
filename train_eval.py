@@ -116,17 +116,18 @@ def finetune_and_eval(
     else:
         this_device="cpu"
         use_fp16=False
-    #with device(this_device):
+    #with device('cpu'):
     if True:
-        peft_config = LoraConfig(
-                task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1, target_modules='xxxxxxx'
-                )
+        #peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1, target_modules='xxxxxxx')
+        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules='all-linear')
+
         if model_scheme == "MADLAD":
             model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
             tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
         if model_scheme == "NLLB":
             model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=float16)
             model = get_peft_model(model, peft_config)
+            print(next(model.parameters()).is_cuda)
             tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
         print('model loaded')
         #batch_size = 16
@@ -152,7 +153,7 @@ def finetune_and_eval(
         trainer = Seq2SeqTrainer(
             model,
             args,
-            train_dataset=tokenized_datasets['train'].train_test_split(test_size=0.0005)['test'],
+            train_dataset=tokenized_datasets['train'].train_test_split(test_size=0.005)['test'],
             eval_dataset=tokenized_datasets['test'].train_test_split(test_size=0.005)['test'], #or should this be dev? I never know ugh
             data_collator = data_collator,
             tokenizer=tokenizer,
