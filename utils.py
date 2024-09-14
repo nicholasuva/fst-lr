@@ -47,4 +47,7 @@ def get_set3_code(
     set3_code = iso_dict[lang]['Set 3 Code']
     return set3_code
 
-
+def get_giellalt_code(lang):
+    iso_dict = load_dict()
+    g_code = iso_dict[lang]['giellalt code']
+    return g_code

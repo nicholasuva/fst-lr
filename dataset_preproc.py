@@ -1,10 +1,14 @@
-from datasets import load_dataset, concatenate_datasets, Dataset, DatasetDict
+from datasets import load_dataset, concatenate_datasets, Dataset, DatasetDict, load_from_disk
 from nltk.tokenize import word_tokenize
 #https://github.com/huggingface/transformers/blob/main/examples/research_projects/codeparrot/scripts/minhash_deduplication.py
 from minhash_deduplication import deduplicate_dataset
 from transformers import T5Tokenizer
+import sys
 
 from io import TextIOWrapper
+
+import utils
+import hfst
 
 def load_datasets(
         dataset_name_list: list[str],
@@ -22,6 +26,7 @@ def load_datasets(
     returns a list of datasets
     containing parallel text in those languages
     """
+    print('Loading datasets...')
     dataset_list = []
     for dataset_name in dataset_name_list:
         this_dataset = load_dataset(
@@ -36,6 +41,7 @@ def load_datasets(
         dataset_log_title = dataset_name+'_'+lang1+'_'+lang2
         log_dataset_info(dataset_log_title, this_dataset, lang1, lang2, sink)
         dataset_list.append(this_dataset)
+    print('Datasets loaded.')
     return dataset_list
 
 def create_tokens_per_sentence_feature(
@@ -122,12 +128,14 @@ def combine_datasets(
     of parallel text, all in the same language pairs
     returns a dataset with the combined data of all datasets in list
     """
+    print('Combining datasets...')
     if len(dataset_list) > 1:
         for i in range(len(dataset_list)-1):
             assert dataset_list[i].features.type == dataset_list[i+1].features.type
     combined_dataset = concatenate_datasets(dataset_list)
     dataset_log_title = 'combined'+'_'+lang1+'_'+lang2
     log_dataset_info(dataset_log_title, combined_dataset, lang1, lang2, sink)
+    print('Datasets combined.')
     return combined_dataset
 
 def check_for_url(
@@ -162,6 +170,7 @@ def clean_dataset(dataset: Dataset,
     """
     applies the check_for_url() and check_for_length() fcts to clean a dataset
     """
+    print('Cleaning dataset...')
     #the IDs of sentence pairs to be discarded
     exclude_rows = set()
     for i in range(len(dataset)):
@@ -183,6 +192,7 @@ def clean_dataset(dataset: Dataset,
     )
     dataset_log_title = 'cleaned'+'_'+lang1+'_'+lang2
     log_dataset_info(dataset_log_title, dataset, lang1, lang2, sink)
+    print('Dataset cleaned.')
     return dataset
 
 def my_dedupe_dataset(
@@ -195,11 +205,13 @@ def my_dedupe_dataset(
     wrapper around code parrot minhash deduplicate
     to add my logging function
     """
+    print('Deduplicating dataset...')
     #looking at jaccard similarity from this paper
     #https://aclanthology.org/2022.acl-long.577.pdf
     dataset, _ = deduplicate_dataset(dataset, jaccard_threshold=0.85)
     dataset_log_title = 'deduped'+'_'+lang1+'_'+lang2
     log_dataset_info(dataset_log_title, dataset, lang1, lang2, sink)
+    print('Dataset deduplicated.')
     return dataset
 
 def stitch_subword_tokens(
@@ -251,6 +263,7 @@ def add_morph_tags_to_sentence(
     do i need recursion lol
     fuck fuck fuck
     todoreplace the placeholder with singular noun tag
+    9/14/24 I think I am going to deprecate this
     """
     tags = []
     for tok in toks:
@@ -261,7 +274,7 @@ def add_morph_tags_to_sentence(
         tags.append(tag)
     return tags
     
-
+"""
 def add_morph_tags_to_dataset(
         dataset: Dataset,
         lang1: str,
@@ -269,11 +282,11 @@ def add_morph_tags_to_dataset(
         sink: TextIOWrapper,
         tokenizer: T5Tokenizer
         ) -> Dataset:
-    """
-    takes in a parallel text dataset
-    uses morphological tag dictionaries to create lists of tags for each sentence
+
+    #takes in a parallel text dataset
+    #uses morphological tag dictionaries to create lists of tags for each sentence
     
-    """
+
     lang1_morph_dict = load_morph_dict(lang1)
     lang2_morph_dict = load_morph_dict(lang2)
     morph_tags = []
@@ -285,7 +298,88 @@ def add_morph_tags_to_dataset(
         this_morph_tag = {lang1: lang1_tags, lang2: lang2_tags}
         morph_tags.append(this_morph_tag)
     dataset = dataset.add_column('morph tags', morph_tags)
+"""
+def load_hfst_tokenizer(src_lang):
+    print('Loading hfst tokenizer...')
+    giellalt_code = utils.get_giellalt_code(src_lang)
+    tokenizer_filename = 'lang-' + giellalt_code + '/tools/tokenisers/tokeniser-disamb-gt-desc.pmhfst'
+    input_stream = hfst.HfstInputStream(tokenizer_filename)
+    transducers = []
+    while not(input_stream.is_eof()):
+        transducers.append(input_stream.read())
+    input_stream.close()
+    tokenizer = hfst.PmatchContainer(transducers)
+    print('hfst tokenizer loaded')
+    return tokenizer
 
+def load_hfst_tagger(src_lang):
+    print('Loading hfst tagger...')
+    giellalt_code = utils.get_giellalt_code(src_lang)
+    tagger_filename = 'lang-' + giellalt_code + '/src/fst/analyser-gt-desc.hfstol'
+    input_stream = hfst.HfstInputStream(tagger_filename)
+    transducers = []
+    while not(input_stream.is_eof()):
+        transducers.append(input_stream.read())
+    input_stream.close()
+    tagger = transducers[0]
+    print('hfst tagger loaded')
+    return tagger
+
+
+def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
+    #hfst_tokenizer = load_hfst_tokenizer(src_lang)
+    hfst_tagger = load_hfst_tagger(src_lang)
+    total_tokens = 0
+    total_unrecognized_tokens = 0
+    all_tokens = []
+    all_tags = []
+    tag_freqs = {}
+    total_num_sentences = len(dataset)
+    progress_counter = 0
+    for sentence in dataset['translation']:
+        progress_counter += 1
+        print('tagging sentences:\t'+str(progress_counter)+'/'+str(total_num_sentences), end='\n')
+        #toks = hfst_tokenizer.tokenize(sentence[src_lang])
+        toks = word_tokenize(sentence[src_lang])
+        all_tokens.append(toks)
+        total_tokens += len(toks)
+        tags = []
+        for tok in toks:
+            #tag = hfst_tagger.lookup(tok)[0][0].split('+', 1)[1]
+            tag = hfst_tagger.lookup(tok)
+            try:
+                clean_tags = []
+                this_tok_raw_tags = tag[0][0].split('#')
+                for raw_tag in this_tok_raw_tags:
+                    clean_tag = raw_tag.split('+', 1)[1]
+                    clean_tags.append(clean_tag)
+            except:
+                clean_tags = ["unknown"]
+            for tag in clean_tags:
+                tags.append(tag)
+                if tag in tag_freqs:
+                    tag_freqs[tag] += 1
+                else:
+                    tag_freqs[tag] = 1
+            if clean_tags[0] == "unknown":
+                total_unrecognized_tokens += 1
+        all_tags.append(tags)
+        print(sentence)
+        print(toks)
+        print(tags)
+    print('\n')
+    print('about to add columns to dataset')
+    dataset = dataset.add_column(src_lang+' tokens', all_tokens)
+    dataset = dataset.add_column(src_lang+' tags', all_tags)
+    print('columns added')
+    sink.write('HFST Tokenization and Tagging ---------------------\n')
+    sink.write('total number of tokens:\t'+str(total_tokens)+'\n')
+    sink.write('total number of unrecognized tokens:\t'+str(total_unrecognized_tokens)+'\n')
+    tag_freqs = {k: v for k, v in sorted(tag_freqs.items(), key=lambda item: item[1])}
+    sink.write('tag frequencies\n')
+    for key in tag_freqs:
+        sink.write(key+':\t'+str(tag_freqs[key])+'\n')
+    return dataset
 
 def split_dataset(
         dataset: Dataset,
@@ -300,6 +394,7 @@ def split_dataset(
     splits a dataset into train test and dev splits
     returns a DatasetDict
     """
+    print('Splitting dataset...')
     #calculate split sizes
     assert train_size + test_size + dev_size == 1.0
     test_split_input = 1.0 - train_size
@@ -320,6 +415,7 @@ def split_dataset(
     sink.write('test num sentence pairs:\t'+str(len(three_way_split_ds['test']))+'\n')
     sink.write('dev proportion:\t'+str(dev_size)+'\n')
     sink.write('dev num sentence pairs:\t'+str(len(three_way_split_ds['dev']))+'\n')
+    print('Dataset split.')
     return three_way_split_ds
 
 def remove_extra_columns(
@@ -340,6 +436,7 @@ def save_dataset_dict(
     """
     saves a DatasetDict locally
     """
+    print('Saving dataset dict...')
     #save the dataset as I've processed it, locally
     ds_filename = lang1 + '-' + lang2 + '-' + 'combined.hf'
     dataset_dict.save_to_disk(ds_filename)
@@ -371,6 +468,14 @@ def preproc_dataset(
 def main():
     #split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'se')
     #save_dataset_dict(split_ds_dict, 'en', 'se')
+
+    test_dataset = load_from_disk('en-fi-combined.hf')['test']
+    with open('morph_test_log.txt', 'w') as sink:
+        test_dataset = add_src_morph_tags(test_dataset, 'fi', sink)
+    return
+
+
+
     split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'fi')
     save_dataset_dict(split_ds_dict, 'en', 'fi')
     return
