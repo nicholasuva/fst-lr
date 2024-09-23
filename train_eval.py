@@ -1,7 +1,7 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
-
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer
+#test test test
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration
 from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Callable
 from torch import cuda, device, set_default_device, Generator, bfloat16, float16
@@ -10,8 +10,12 @@ import numpy as np
 import utils
 from peft import get_peft_model, LoraConfig, TaskType
 
+import sys
+import trace
 import psutil
 import resource
+import hunter
+#import function_trace
 #some stuff that will be used everywhere perhaps
 #model_checkpoint = 'jbochi/madlad400-3b-mt'
 
@@ -122,11 +126,19 @@ def finetune_and_eval(
         peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules='all-linear')
 
         if model_scheme == "MADLAD":
-            model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=bfloat16)
-            tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-        if model_scheme == "NLLB":
-            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=float16)
+            model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=float16)
             model = get_peft_model(model, peft_config)
+            tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
+            
+        if model_scheme == "NLLB":
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto")#, torch_dtype=float16)
+            #model = get_peft_model(model, peft_config)
+            child_counter=0
+            for child in model.children():
+                print("child ", child_counter, "is:")
+                print(child)
+                child_counter += 1
+            return
             print(next(model.parameters()).is_cuda)
             tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
         print('model loaded')
@@ -153,7 +165,7 @@ def finetune_and_eval(
         trainer = Seq2SeqTrainer(
             model,
             args,
-            train_dataset=tokenized_datasets['train'].train_test_split(test_size=0.005)['test'],
+            train_dataset=tokenized_datasets['train'].train_test_split(test_size=0.00005)['test'],
             eval_dataset=tokenized_datasets['test'].train_test_split(test_size=0.005)['test'], #or should this be dev? I never know ugh
             data_collator = data_collator,
             tokenizer=tokenizer,
@@ -162,6 +174,49 @@ def finetune_and_eval(
 
         #trainer.evaluate()
         print('about to train')
+        #tracer = trace.Trace()
+        #tracer.run("trainer.train()")
+
+        hunter.trace(
+            #stdlib=False,
+            #clear_env_var=True,
+            #calls=10
+            hunter.Q(
+                depth_lt=5,
+                kind='call',
+                stdlib=False,
+                #function_startswith=('train')
+                #function='train'
+                #module='Seq2SeqTrainer',
+                #module='transformers.Seq2SeqTrainer'
+            ) &
+            ~hunter.Q(
+                function_startswith=(
+                                     '_hp_search_setup',
+                                     'n_gpu',
+                                     'find_executable',
+                                     'free_memory',
+                                     'debug',
+                                     'world_size',
+                                     'has_length',
+                                     '__len__',
+                                     'num_examples',
+                                     'is_sagemaker_mp',
+                                     'create_optimizer',
+                                     '_wrap',
+                                     'get_model',
+                                     'is_',
+                                     'zero_grad',
+                                     'prepare',
+                                     'get_train',
+                                     '<genexpr>',
+                                     'parameters'
+                                     )
+                #function='train',
+                #function='start'
+            )
+            #module='trainer'
+        )
         trainer.train()
     return
 
@@ -216,11 +271,12 @@ def main() -> None:
     # Set the memory limit
     resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
     """
+
     print(cuda.device_count())
     print(cuda.is_available())
     #set_default_device("cuda")
     #eval(model_checkpoint, 'se', 'en')
-    #finetune_and_eval(model_checkpoint, 'en', 'se')
+    #finetune_and_eval('jbochi/madlad400-3b-mt', 'MADLAD', 'en', 'fi')
     finetune_and_eval('facebook/nllb-200-distilled-600M', 'NLLB', 'en', 'fi')
     return
 
