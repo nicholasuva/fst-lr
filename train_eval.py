@@ -1,7 +1,7 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
 #test test test
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, AdamW
 from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Callable
 from torch import cuda, device, set_default_device, Generator, bfloat16, float16
@@ -9,6 +9,8 @@ from evaluate import evaluator
 import numpy as np
 import utils
 from peft import get_peft_model, LoraConfig, TaskType
+
+from morph_model import MorphM2M100
 
 import sys
 import trace
@@ -133,13 +135,11 @@ def finetune_and_eval(
         if model_scheme == "NLLB":
             model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto")#, torch_dtype=float16)
             #model = get_peft_model(model, peft_config)
-            child_counter=0
-            for child in model.children():
-                print("child ", child_counter, "is:")
-                print(child)
-                child_counter += 1
-            return
             print(next(model.parameters()).is_cuda)
+            tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
+        if model_scheme == "Morph":
+            config = M2M100Config.from_pretrained('facebook/nllb-200-distilled-600M')
+            model = MorphM2M100(config)
             tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
         print('model loaded')
         #batch_size = 16
@@ -176,7 +176,7 @@ def finetune_and_eval(
         print('about to train')
         #tracer = trace.Trace()
         #tracer.run("trainer.train()")
-
+        """
         hunter.trace(
             #stdlib=False,
             #clear_env_var=True,
@@ -217,6 +217,7 @@ def finetune_and_eval(
             )
             #module='trainer'
         )
+        """
         trainer.train()
     return
 
@@ -256,6 +257,11 @@ def eval(
     return
 
 
+def morph_custom_train(
+        something
+    ):
+
+
 
 def main() -> None:
     #model = T5ForConditionalGeneration.from_pretrained(model_checkpoint)
@@ -277,7 +283,8 @@ def main() -> None:
     #set_default_device("cuda")
     #eval(model_checkpoint, 'se', 'en')
     #finetune_and_eval('jbochi/madlad400-3b-mt', 'MADLAD', 'en', 'fi')
-    finetune_and_eval('facebook/nllb-200-distilled-600M', 'NLLB', 'en', 'fi')
+    #finetune_and_eval('facebook/nllb-200-distilled-600M', 'NLLB', 'en', 'fi')
+    finetune_and_eval('facebook/nllb-200-distilled-600M', 'Morph', 'en', 'fi')
     return
 
 if __name__ == "__main__":

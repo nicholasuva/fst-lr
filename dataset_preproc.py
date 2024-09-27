@@ -261,7 +261,6 @@ def add_morph_tags_to_sentence(
     I forgot to stitch the word back together
     first I need to create a second list 
     do i need recursion lol
-    fuck fuck fuck
     todoreplace the placeholder with singular noun tag
     9/14/24 I think I am going to deprecate this
     """
@@ -354,14 +353,14 @@ def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
                     clean_tag = raw_tag.split('+', 1)[1]
                     clean_tags.append(clean_tag)
             except:
-                clean_tags = ["unknown"]
+                clean_tags = ["UNK"]
             for tag in clean_tags:
                 tags.append(tag)
                 if tag in tag_freqs:
                     tag_freqs[tag] += 1
                 else:
                     tag_freqs[tag] = 1
-            if clean_tags[0] == "unknown":
+            if clean_tags[0] == "UNK":
                 total_unrecognized_tokens += 1
         all_tags.append(tags)
         print(sentence)
@@ -460,6 +459,7 @@ def preproc_dataset(
         dataset = combine_datasets(dataset_list, lang1, lang2, sink)
         dataset = clean_dataset(dataset, lang1, lang2, sink)
         dataset = my_dedupe_dataset(dataset,lang1, lang2, sink)
+        dataset = add_src_morph_tags(dataset, lang2, sink)
         dataset = remove_extra_columns(dataset)
         split_ds_dict = split_dataset(dataset, lang1, lang2, sink)
     return split_ds_dict
@@ -469,10 +469,10 @@ def main():
     #split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'se')
     #save_dataset_dict(split_ds_dict, 'en', 'se')
 
-    test_dataset = load_from_disk('en-fi-combined.hf')['test']
-    with open('morph_test_log.txt', 'w') as sink:
-        test_dataset = add_src_morph_tags(test_dataset, 'fi', sink)
-    return
+    #test_dataset = load_from_disk('en-fi-combined.hf')['test']
+    #with open('morph_test_log.txt', 'w') as sink:
+        #test_dataset = add_src_morph_tags(test_dataset, 'fi', sink)
+    #return
 
 
 
