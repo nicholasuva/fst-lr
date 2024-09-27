@@ -337,7 +337,7 @@ def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
     progress_counter = 0
     for sentence in dataset['translation']:
         progress_counter += 1
-        print('tagging sentences:\t'+str(progress_counter)+'/'+str(total_num_sentences), end='\n')
+        print('tagging sentences:\t'+str(progress_counter)+'/'+str(total_num_sentences), end='\r')
         #toks = hfst_tokenizer.tokenize(sentence[src_lang])
         toks = word_tokenize(sentence[src_lang])
         all_tokens.append(toks)
@@ -363,10 +363,10 @@ def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
             if clean_tags[0] == "UNK":
                 total_unrecognized_tokens += 1
         all_tags.append(tags)
-        print(sentence)
-        print(toks)
-        print(tags)
-    print('\n')
+        #print(sentence)
+        #print(toks)
+        #print(tags)
+    #print('\n')
     print('about to add columns to dataset')
     dataset = dataset.add_column(src_lang+' tokens', all_tokens)
     dataset = dataset.add_column(src_lang+' tags', all_tags)
