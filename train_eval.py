@@ -1,14 +1,19 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
 #test test test
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, AdamW
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, AdamW, NllbTokenizer, get_scheduler
 from datasets import Dataset, DatasetDict, load_from_disk
 from typing import Callable
-from torch import cuda, device, set_default_device, Generator, bfloat16, float16
+from torch import cuda, device, set_default_device, Generator, no_grad, bfloat16, float16
+import torch
+from torch.nn.utils import clip_grad_norm_
+from torch.utils.data import DataLoader
 from evaluate import evaluator
 import numpy as np
 import utils
 from peft import get_peft_model, LoraConfig, TaskType
+from tqdm.auto import tqdm
+from morph_tokenizer import create_morph_tokenizer
 
 from morph_model import MorphM2M100
 
@@ -257,9 +262,115 @@ def eval(
     return
 
 
+def create_model():
+    print('creating model')
+    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+    #text_tokenizer = xxxxx
+    config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
+    model = MorphM2M100(config)
+    if False:
+        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules='all-linear')
+        model = get_peft_model(model, peft_config)
+    print('model created')
+    return model
+
+def preproc_data():
+    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+    text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint)
+    tag_tokenizer = create_morph_tokenizer()
+    max_input_length = 25
+    max_tag_length = 25
+    max_target_length = 25
+    dataset = load_from_disk('en-fi-combined.hf')
+    dataset= dataset['train']
+    src_lang = 'fi'
+    trg_lang = 'en'
+    prefix = utils.get_nllb_code(trg_lang) + ' ' #this is wrong I need prefix on the trg lang for nllb ugh wait maybe this is right
+    inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
+    targets = [(ex[trg_lang]) for ex in dataset['translation']]
+    tags_data = [ex for ex in dataset['fi tags']]
+    print(tags_data[0])
+    print(tags_data[1])
+    tags_data = [' '.join(tag for tag in tags) for tags in tags_data]
+    tags_data = [sent.replace('+', '') for sent in tags_data]
+    #print(tags_data[0])
+    #print(tags_data[1])
+    model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=True, truncation=True, return_tensors='pt')
+    labels = text_tokenizer(targets, max_length=max_target_length, padding=True, truncation=True, return_tensors='pt')
+    model_tag_inputs = [tag_tokenizer.encode(tags).ids for tags in tags_data]
+    model_tag_inputs = [enc + [0] * (max_input_length - len(enc)) if len(enc) < max_input_length else enc[:max_input_length] for enc in model_tag_inputs]
+    model_tag_inputs = torch.tensor(model_tag_inputs)
+    model_inputs['labels'] = labels['input_ids']
+    model_inputs['tags'] = model_tag_inputs
+    return model_inputs
+
+
+def create_dataloaders():
+    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+    #text_tokenizer = M2M100Tokenizer.from_pretrained(initial_checkpoint)
+    #tag_tokenizer = create_morph_tokenizer()
+    #dataset = load_from_disk('en-fi-combined.hf')
+    data = preproc_data()
+    dataloader = DataLoader(data, batch_size=1, shuffle=False)
+    return dataloader
+
+
+
 def morph_custom_train(
-        something
+        model: MorphM2M100,
+        train_dataloader,
+        eval_dataloader,
+        num_epochs,
+        learning_rate=5e-5
     ):
+
+    #ensure correct device
+    device = torch.device("cuda") if cuda.is_available() else torch.device("cpu")
+    model.to(device)
+
+    #optimizer, scheduler, progress bar
+    optimizer=AdamW(model.parameters(), lr=learning_rate)
+    num_training_steps = num_epochs * len(train_dataloader)
+    lr_scheduler = get_scheduler('linear', optimizer=optimizer, num_warmup_steps=0, num_training_steps=num_training_steps)
+    progress_bar = tqdm(range(num_training_steps))
+
+    print('training...')
+    for epoch in range(num_epochs):
+        #train
+        model.train()
+        total_training_loss = 0
+        for batch in train_dataloader:
+            lang_input_ids = batch['lang_input_ids'].to(device)
+            morph_input_ids = batch['morph_input_ids'].to(device)
+            labels = batch['labels'].to(device)
+            outputs = model(lang_input_ids=lang_input_ids, morph_input_ids=morph_input_ids, labels=labels)
+            loss = outputs.loss
+            total_training_loss += loss.item()
+            loss.backward()
+            clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+            progress_bar.update(1)
+        avg_training_loss = total_training_loss / len(train_dataloader)
+        print(f"Epoch {epoch+1} - Avg Training Loss: {avg_training_loss}")
+        #eval
+        model.eval()
+        total_evaluation_loss = 0
+        for batch in eval_dataloader:
+            with no_grad():
+                lang_input_ids = batch['lang_input_ids'].to(device)
+                morph_input_ids = batch['morph_input_ids'].to(device)
+                labels = batch['labels'].to(device)
+                outputs = model(lang_input_ids=lang_input_ids, morph_input_ids=morph_input_ids, labels=labels)
+                loss = outputs.loss
+                total_evaluation_loss += loss.item()
+        avg_evaluation_loss = total_evaluation_loss / len(eval_dataloader)
+        print(f"Epoch {epoch+1} - Avg Evaluation Loss: {avg_evaluation_loss}")
+        #need to like save the model somehow
+    return
+
+
 
 
 
@@ -280,6 +391,34 @@ def main() -> None:
 
     print(cuda.device_count())
     print(cuda.is_available())
+
+    #finetune_and_eval('facebook/nllb-200-distilled-600M', 'Morph', 'en', 'fi')
+    #return
+
+
+    #model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distilled-600m')
+    if False:
+        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules='all-linear')
+        model = get_peft_model(model, peft_config)
+
+    model = create_model()
+    device = torch.device('cuda')
+    model.to(device)
+    #for param in model.model.encoder.parameters():
+        #param.requires_grad = False
+    data = preproc_data()
+    data.to(device)
+    print('about to train')
+    outputs = model(data['input_ids'], data['tags'], attention_mask=data['attention_mask'], labels=data['labels'])
+    #outputs = model(data['input_ids'], attention_mask=data['attention_mask'], labels=data['labels'])
+    print(outputs)
+    return
+    dataloader = create_dataloaders()
+    morph_custom_train(model, dataloader, dataloader, 1)
+    return
+
+
+
     #set_default_device("cuda")
     #eval(model_checkpoint, 'se', 'en')
     #finetune_and_eval('jbochi/madlad400-3b-mt', 'MADLAD', 'en', 'fi')
