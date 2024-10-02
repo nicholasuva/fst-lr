@@ -15,7 +15,8 @@ from peft import get_peft_model, LoraConfig, TaskType
 from tqdm.auto import tqdm
 from morph_tokenizer import create_morph_tokenizer
 
-from morph_model import MorphM2M100
+from morph_model import MorphM2M100, MorphModelDataCollator
+
 
 import sys
 import trace
@@ -295,13 +296,17 @@ def preproc_data():
     tags_data = [sent.replace('+', '') for sent in tags_data]
     #print(tags_data[0])
     #print(tags_data[1])
-    model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=True, truncation=True, return_tensors='pt')
-    labels = text_tokenizer(targets, max_length=max_target_length, padding=True, truncation=True, return_tensors='pt')
+    #trying out not padding here bc the data collator will pad
+    #model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=True, truncation=True, return_tensors='pt')
+    #labels = text_tokenizer(targets, max_length=max_target_length, padding=True, truncation=True, return_tensors='pt')
+    model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=False, truncation=True)
+    labels = text_tokenizer(targets, max_length=max_target_length, padding=False, truncation=True)
     model_tag_inputs = [tag_tokenizer.encode(tags).ids for tags in tags_data]
-    model_tag_inputs = [enc + [0] * (max_input_length - len(enc)) if len(enc) < max_input_length else enc[:max_input_length] for enc in model_tag_inputs]
-    model_tag_inputs = torch.tensor(model_tag_inputs)
+    #model_tag_inputs = [enc + [0] * (max_input_length - len(enc)) if len(enc) < max_input_length else enc[:max_input_length] for enc in model_tag_inputs]
+    #model_tag_inputs = torch.tensor(model_tag_inputs)
     model_inputs['labels'] = labels['input_ids']
     model_inputs['tags'] = model_tag_inputs
+    model_inputs = Dataset.from_dict(model_inputs)
     return model_inputs
 
 
@@ -371,7 +376,34 @@ def morph_custom_train(
     return
 
 
+def gen_training_args():
+    training_args = Seq2SeqTrainingArguments(
+        output_dir='./test_results',
+        evaluation_strategy='steps',
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
+        learning_rate=5e-5,
+        weight_decay=0.01,
+        logging_dir='./test_logs',
+        logging_steps=10,
+        save_steps=500,
+        num_train_epochs=3
+    )
+    return training_args
 
+
+def morph_train_with_trainer(model, data):
+    text_tokenizer = NllbTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
+    data_collator = MorphModelDataCollator(text_tokenizer,model)
+    training_args = gen_training_args()
+    trainer = Seq2SeqTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=data,
+        data_collator=data_collator
+    )
+    trainer.train()
+    return
 
 
 def main() -> None:
@@ -402,16 +434,17 @@ def main() -> None:
         model = get_peft_model(model, peft_config)
 
     model = create_model()
-    device = torch.device('cuda')
-    model.to(device)
+    #device = torch.device('cuda')
+    #model.to(device)
     #for param in model.model.encoder.parameters():
         #param.requires_grad = False
     data = preproc_data()
-    data.to(device)
+    #data.to(device)
     print('about to train')
-    outputs = model(data['input_ids'], data['tags'], attention_mask=data['attention_mask'], labels=data['labels'])
+    morph_train_with_trainer(model, data)
+    #outputs = model(data['input_ids'], data['tags'], attention_mask=data['attention_mask'], labels=data['labels'])
     #outputs = model(data['input_ids'], attention_mask=data['attention_mask'], labels=data['labels'])
-    print(outputs)
+    #print(outputs)
     return
     dataloader = create_dataloaders()
     morph_custom_train(model, dataloader, dataloader, 1)
