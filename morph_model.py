@@ -8,10 +8,12 @@ model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distil
 config = M2M100Config.from_pretrained('facebook/nllb-200-distilled-600M')
 
 
+
 class MorphM2M100(M2M100ForConditionalGeneration):
-    def __init__(self, config):
+    def __init__(self, config, max_length=25):
         print('before model initialized')
         utils.log_memory_usage()
+        config.max_length = max_length
         super().__init__(config)
         print('after base model initialized')
         utils.log_memory_usage()
@@ -21,7 +23,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         self.morph_encoder = M2M100ForConditionalGeneration(config).get_encoder()
         print('after morph encoder initialized')
         utils.log_memory_usage()
-        self.morph_encoder.layers = self.morph_encoder.layers[:1]
+        self.morph_encoder.layers = self.morph_encoder.layers[:2]
         print('after base model reshaped')
         utils.log_memory_usage()
         self.projection_layer = torch.nn.Linear(2048, config.d_model)
@@ -61,6 +63,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
                 decoder_head_mask=None,
                 cross_attn_head_mask=None,
                 use_cache=None,
+                decoder_inputs_embeds=None,
                 **kwargs
     ):
           
@@ -114,12 +117,38 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         if decoder_input_ids is not None and decoder_attention_mask is None:
             decoder_attention_mask = self._generate_causal_mask(decoder_input_ids)
 
+        if decoder_input_ids is not None:
+            decoder_outputs = self.model.decoder(
+                input_ids=decoder_input_ids,
+                #inputs_embeds=decoder_inputs,
+                attention_mask=decoder_attention_mask,
+                encoder_attention_mask=attention_mask,
+                encoder_hidden_states=projected_encoder_outputs,
+                head_mask=decoder_head_mask,
+                cross_attn_head_mask=cross_attn_head_mask,
+                use_cache=use_cache,
+                #inputs_embeds=decoder_inputs_embeds,
+                **kwargs
+            )
+        elif decoder_inputs_embeds is not None:
+            decoder_outputs = self.model.decoder(
+                #input_ids=decoder_input_ids,
+                inputs_embeds=decoder_inputs_embeds,
+                attention_mask=decoder_attention_mask,
+                encoder_attention_mask=attention_mask,
+                encoder_hidden_states=projected_encoder_outputs,
+                head_mask=decoder_head_mask,
+                cross_attn_head_mask=cross_attn_head_mask,
+                use_cache=use_cache,
+                #inputs_embeds=decoder_inputs_embeds,
+                **kwargs
+            )
+        else:
+            raise ValueError("Require either decoder_input_ids or decoder_inputs_embeds")
+
 
 
         
-        
-        print('after decoder attention mask generated')
-        utils.log_memory_usage()
 
         print(f"input ids shape: {input_ids.size() if input_ids is not None else None}")
         print(f"tags shape: {tags.size() if tags is not None else None}")
@@ -133,16 +162,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         print(f"attention_mask shape: {attention_mask.size() if attention_mask is not None else None}")
 
 
-        decoder_outputs = self.model.decoder(
-            input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
-            encoder_attention_mask=attention_mask,
-            encoder_hidden_states=projected_encoder_outputs,
-            head_mask=decoder_head_mask,
-            cross_attn_head_mask=cross_attn_head_mask,
-            use_cache=use_cache,
-            **kwargs
-        )
+
 
         if isinstance(decoder_outputs, tuple):
             decoder_hidden_states = decoder_outputs[0]
@@ -182,7 +202,7 @@ class MorphModelDataCollator:
 
     def __call__(self, data):
         input_ids = [d['input_ids'] for d in data]
-        tags = [d['tags'] for d in data]
+        
         labels = [d['labels'] for d in data]
         #lang_input_ids = data['input_ids']
         #morph_input_ids = data['tags']
@@ -191,27 +211,34 @@ class MorphModelDataCollator:
         batch_input_ids = self.tokenizer.pad({'input_ids': input_ids}, padding=self.padding, return_tensors='pt')
         batch_labels = self.tokenizer.pad({'input_ids': labels}, padding=self.padding, return_tensors='pt')
 
-        max_length = batch_input_ids['input_ids'].size(1)
-        batch_tags = torch.nn.utils.rnn.pad_sequence(
-            [torch.tensor(ids, dtype=torch.long) for ids in tags], batch_first=True, padding_value=0
-        )
 
-        if batch_tags.size(1) < max_length:
-            padding = torch.zeros((batch_tags.size(0), max_length - batch_tags.size(1)), dtype=torch.long)
-            batch_tags = torch.cat((batch_tags, padding), dim=1)
 
         print(f"batch input ids shape: {batch_input_ids['input_ids'].shape}")
-        print(f"batch tags shape: {batch_tags.shape}")
+        
         print(f"batch labels shape: {batch_labels['input_ids'].shape}")
         print(f"batch attention mask shape: {batch_input_ids['attention_mask'].shape}")
 
         collated_data = {
                             'input_ids': batch_input_ids['input_ids'].long(),
-                            'tags': batch_tags.long(),
                             'labels': batch_labels['input_ids'].long(),
                             'attention_mask': batch_input_ids['attention_mask']
         }
         
+        if isinstance(self.model, MorphM2M100):
+            tags = [d['tags'] for d in data]
+            max_length = batch_input_ids['input_ids'].size(1)
+            batch_tags = torch.nn.utils.rnn.pad_sequence(
+                [torch.tensor(ids, dtype=torch.long) for ids in tags], batch_first=True, padding_value=0
+            )
+            if batch_tags.size(1) < max_length:
+                padding = torch.zeros((batch_tags.size(0), max_length - batch_tags.size(1)), dtype=torch.long)
+                batch_tags = torch.cat((batch_tags, padding), dim=1)
+            print(f"batch tags shape: {batch_tags.shape}")
+            collated_data['tags'] = batch_tags.long()
+
+
+
+
         return collated_data
     
 class ForwardOnlyTrainer(Seq2SeqTrainer):

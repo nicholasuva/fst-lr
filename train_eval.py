@@ -17,7 +17,7 @@ from morph_tokenizer import create_morph_tokenizer
 
 from morph_model import MorphM2M100, MorphModelDataCollator, ForwardOnlyTrainer
 
-
+import evaluate
 
 
 import sys
@@ -92,30 +92,55 @@ def compute_metrics(
     """
     
     """
+    print(f"-----------beginning compute metrics-----------")
+    print(f"eval preds fields: {[entry for entry in eval_preds]}")
+    #print(f"eval preds content: {[eval_preds[entry] for entry in eval_preds]}")
     tokenizer = NllbTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
-
+    
     #tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-    preds, labels = eval_preds
-    if isinstance(preds, tuple):
-        preds = preds[0]
-    decoded_preds = tokenizer.batch_decode(np.argmax(preds, axis=-1), skip_special_tokens=True)
+    logits, labels = eval_preds
+    print(f"logits {logits}")
+    print(f"labels: {labels}")
+    if isinstance(logits, tuple):
+        logits = logits[0]
+
+    #preds = np.argmax(logits, axis=-1)
+    preds = logits
+    #labels = labels[0]
+    print(f"preds: {preds}")
+    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    print(f"decoded preds: {decoded_preds}")
 
     # Replace -100 in the labels as we can't decode them.
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    print(f"labels: {labels}")
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    print(f"decoded labels: {decoded_labels}")
 
     # Some simple post-processing
-    decoded_preds = [pred.strip() for pred in preds]
-    decoded_labels = [[label.strip()] for label in labels]
+    #decoded_preds = [pred.strip() for pred in preds]
+    #decoded_labels = [[label.strip()] for label in labels]
 
-    bleu_metric = load_metric("sacrebleu")
-    accuracy_metric = load_metric("accuracy")
+    #load_metric is deprecated, need to use evaluate.load() from the library hf evaluate
+    #bleu_metric = load_metric("sacrebleu", trust_remote_code=True)
+    #accuracy_metric = load_metric("accuracy", trust_remote_code=True)
+
+    bleu_metric = evaluate.load('sacrebleu')
+    #accuracy_metric = evaluate.load('accuracy')
+
     
-    bleu = bleu_metric.compute(predictions=decoded_preds, references=[[label] for label in decoded_labels])
-    accuracy = accuracy_metric.compute(predictions=np.argmax(preds, axis=-1), references=labels)
+    bleu = bleu_metric.compute(
+        predictions=decoded_preds,
+        references=[[label] for label in decoded_labels]
+        )
+    #accuracy = accuracy_metric.compute(
+        #predictions=np.argmax(preds, axis=-1),
+        #predictions=preds,
+        #references=labels
+        #)
     results = {
-        'bleu': bleu['score'],
-        'accuracy': accuracy['accuracy']
+        'bleu': bleu['score']#,
+        #'accuracy': accuracy['accuracy']
     }
     return results
 
@@ -287,14 +312,37 @@ def create_model():
     config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
     model = MorphM2M100(config)
     if False:
-        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules='all-linear')
+        peft_config = LoraConfig(
+            task_type=TaskType.SEQ_2_SEQ_LM,
+            #target_modules='all-linear'
+            target_modules=['q_proj', 'v_proj']
+            )
         model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
     print('model created')
     return model
 
-def preproc_data():
+def create_baseline_model():
+    print('creating model')
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
-    text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint)
+    #text_tokenizer = xxxxx
+    #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
+    #model = MorphM2M100(config)
+    model = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint)
+    if False:
+        peft_config = LoraConfig(
+            task_type=TaskType.SEQ_2_SEQ_LM,
+            #target_modules='all-linear'
+            target_modules=['q_proj', 'v_proj']
+            )
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
+    print('model created')
+    return model
+
+def preproc_data(text_tokenizer):
+    src_lang = 'fi'
+    trg_lang = 'en'
     tag_tokenizer = create_morph_tokenizer()
     max_length = 25
     max_input_length = max_length
@@ -302,12 +350,14 @@ def preproc_data():
     max_target_length = max_length
     dataset = load_from_disk('en-fi-combined.hf')
     #dataset= dataset['train'].select(range(1))
-    dataset= dataset['train'].train_test_split(test_size=0.00001)['test']
-    src_lang = 'fi'
-    trg_lang = 'en'
+    dataset= dataset['train'].train_test_split(test_size=0.00005)['test']
+
     prefix = utils.get_nllb_code(trg_lang) + ' ' #this is wrong I need prefix on the trg lang for nllb ugh wait maybe this is right
     inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
     targets = [(ex[trg_lang]) for ex in dataset['translation']]
+    print(f"raw inputs: {[sent for sent in inputs]}")
+    print(f"raw targets: {[sent for sent in targets]}")
+
     tags_data = [ex for ex in dataset['fi tags']]
     tags_data = [' '.join(tag for tag in tags) for tags in tags_data]
     tags_data = [sent.replace('+', '') for sent in tags_data]
@@ -318,12 +368,17 @@ def preproc_data():
     #labels = text_tokenizer(targets, max_length=max_target_length, padding=True, truncation=True, return_tensors='pt')
     model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=False, truncation=True)
     labels = text_tokenizer(targets, max_length=max_target_length, padding=False, truncation=True)
-    model_tag_inputs = [tag_tokenizer.encode(tags).ids for tags in tags_data]
+    model_tag_inputs = [tag_tokenizer.encode(tags).ids[:max_tag_length] for tags in tags_data]
+    
 
     #testing effect of snt ln on memory
-    model_inputs['input_ids'] = [ex[:5] for ex in model_inputs['input_ids']]
-    labels['input_ids'] = [ex[:5] for ex in labels['input_ids']]
-    model_tag_inputs = [ex[:5] for ex in model_tag_inputs]
+    data_trunc_test_len = 25
+    model_inputs['input_ids'] = [ex[:data_trunc_test_len] for ex in model_inputs['input_ids']]
+    labels['input_ids'] = [ex[:data_trunc_test_len] for ex in labels['input_ids']]
+    model_tag_inputs = [ex[:data_trunc_test_len] for ex in model_tag_inputs]
+    #model_inputs['input_ids'] = [ex for ex in model_inputs['input_ids']]
+    #labels['input_ids'] = [ex for ex in labels['input_ids']]
+    #model_tag_inputs = [ex for ex in model_tag_inputs]
 
 
     #model_tag_inputs = [enc + [0] * (max_input_length - len(enc)) if len(enc) < max_input_length else enc[:max_input_length] for enc in model_tag_inputs]
@@ -404,7 +459,7 @@ def gen_training_args():
     training_args = Seq2SeqTrainingArguments(
         output_dir='./test_results',
         fp16=True,
-        evaluation_strategy='steps',
+        eval_strategy='steps',
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
         learning_rate=5e-5,
@@ -414,13 +469,16 @@ def gen_training_args():
         save_steps=500,
         num_train_epochs=3,
         predict_with_generate=True,
-        load_best_model_at_end=True
+        load_best_model_at_end=True,
+        save_total_limit=3
     )
     return training_args
 
 
-def morph_train_with_trainer(model, data):
-    text_tokenizer = NllbTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
+def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eval=False):
+    src_lang = 'fi'
+    trg_lang = 'en'
+    #text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang))
     data_collator = MorphModelDataCollator(text_tokenizer,model)
     training_args = gen_training_args()
     #trainer = Seq2SeqTrainer(
@@ -432,13 +490,17 @@ def morph_train_with_trainer(model, data):
         data_collator=data_collator,
         compute_metrics=compute_metrics
     )
-    trainer.train()
-    results = trainer.evaluate()
-    print(f"results: {results}")
+    if to_train:
+        trainer.train()
+    if to_eval:
+        results = trainer.evaluate()
+        print(f"results: {results}")
+        with open('first_try_model_results.txt', 'w') as sink:
+            sink.write(str(results))
     trainer.save_model('./first_try_test_model')
-    with open('first_try_model_results.txt', 'w') as sink:
-        sink.write(str(results))
+    
     return
+
 
 
 def morph_forward_only_test():
@@ -470,33 +532,36 @@ def main() -> None:
     """
 
     print(f"cuda device count: {cuda.device_count()}")
-    print(cuda.is_available())
-    print(cuda.current_device())
-    print(cuda.get_device_name(cuda.current_device()))
+    print(f"cuda is available: {cuda.is_available()}")
+    print(f"cuda current device: {cuda.current_device()}")
+    print(f"cuda current device name: {cuda.get_device_name(cuda.current_device())}")
     cuda.empty_cache()
     cuda.reset_max_memory_allocated()
-    print(cuda.memory_summary())
+    #print(cuda.memory_summary())
     #finetune_and_eval('facebook/nllb-200-distilled-600M', 'Morph', 'en', 'fi')
     #return
 
 
     #model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distilled-600m')
 
-    model = create_model()
-    #model.gradient_checkpointing_enable()
-    if False:
-        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules='all-linear')
-        model = get_peft_model(model, peft_config)
+    #model = create_model()
 
-    
+    model = create_baseline_model()
+    #model.gradient_checkpointing_enable()
+    src_lang = 'fi'
+    trg_lang = 'en'
+    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+    text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang), tgt_lang=utils.get_nllb_code(trg_lang))
+
     #device = torch.device('cuda')
     #model.to(device)
     #for param in model.model.encoder.parameters():
         #param.requires_grad = False
-    data = preproc_data()
+    data = preproc_data(text_tokenizer)
     #data.to(device)
     print('about to train')
-    morph_train_with_trainer(model, data)
+    morph_train_with_trainer(model, data, text_tokenizer, to_train=True, to_eval=True)
+    print(f"dataset size: {data.num_rows}")
     #outputs = model(data['input_ids'], data['tags'], attention_mask=data['attention_mask'], labels=data['labels'])
     #outputs = model(data['input_ids'], attention_mask=data['attention_mask'], labels=data['labels'])
     #print(outputs)

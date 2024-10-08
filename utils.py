@@ -10,7 +10,7 @@ NLLB Code: set 3 ISO code, underscore, script in which language is written
 """
 
 
-logging_on = True
+logging_on = False
 
 
 iso_filename = "ISO-conversion.csv"
