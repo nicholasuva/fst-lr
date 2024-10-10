@@ -1,7 +1,7 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
 #test test test
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, AdamW, NllbTokenizer, get_scheduler
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, AdamW, NllbTokenizer, get_scheduler, Adafactor
 from datasets import Dataset, DatasetDict, load_from_disk, load_metric
 from typing import Callable
 from torch import cuda, device, set_default_device, Generator, no_grad, bfloat16, float16
@@ -28,6 +28,9 @@ import hunter
 #import function_trace
 #some stuff that will be used everywhere perhaps
 #model_checkpoint = 'jbochi/madlad400-3b-mt'
+
+#trying gpu version override
+HSA_OVERRIDE_GFX_VERSION=1030
 
 
 
@@ -93,12 +96,16 @@ def compute_metrics(
     
     """
     print(f"-----------beginning compute metrics-----------")
-    print(f"eval preds fields: {[entry for entry in eval_preds]}")
+    #print(f"eval preds fields: {[entry for entry in eval_preds]}")
     #print(f"eval preds content: {[eval_preds[entry] for entry in eval_preds]}")
     tokenizer = NllbTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
     
     #tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
     logits, labels = eval_preds
+    logits_lang_codes = tokenizer.batch_decode([sent[0] for sent in logits], skip_special_tokens=True)
+    labels_lang_codes = tokenizer.batch_decode([sent[0] for sent in labels], skip_special_tokens=True)
+    print(f"logit lang codes: {logits_lang_codes}")
+    print(f"label lang codes: {labels_lang_codes}")
     print(f"logits {logits}")
     print(f"labels: {labels}")
     if isinstance(logits, tuple):
@@ -107,13 +114,13 @@ def compute_metrics(
     #preds = np.argmax(logits, axis=-1)
     preds = logits
     #labels = labels[0]
-    print(f"preds: {preds}")
+    #print(f"preds: {preds}")
     decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
     print(f"decoded preds: {decoded_preds}")
 
     # Replace -100 in the labels as we can't decode them.
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-    print(f"labels: {labels}")
+    #print(f"labels: {labels}")
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
     print(f"decoded labels: {decoded_labels}")
 
@@ -198,7 +205,7 @@ def finetune_and_eval(
             learning_rate=2e-5,
             per_device_train_batch_size=batch_size,
             per_device_eval_batch_size=batch_size,
-            gradient_accumulation_steps=4,
+            #gradient_accumulation_steps=4,
             weight_decay=0.01,
             save_total_limit=3,
             num_train_epochs=1,
@@ -344,7 +351,7 @@ def preproc_data(text_tokenizer):
     src_lang = 'fi'
     trg_lang = 'en'
     tag_tokenizer = create_morph_tokenizer()
-    max_length = 25
+    max_length = 250
     max_input_length = max_length
     max_tag_length = max_length
     max_target_length = max_length
@@ -353,10 +360,12 @@ def preproc_data(text_tokenizer):
     dataset= dataset['train'].train_test_split(test_size=0.00005)['test']
 
     prefix = utils.get_nllb_code(trg_lang) + ' ' #this is wrong I need prefix on the trg lang for nllb ugh wait maybe this is right
-    inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
+    #inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
+    inputs = [(ex[src_lang]) for ex in dataset['translation']]
     targets = [(ex[trg_lang]) for ex in dataset['translation']]
     print(f"raw inputs: {[sent for sent in inputs]}")
     print(f"raw targets: {[sent for sent in targets]}")
+    
 
     tags_data = [ex for ex in dataset['fi tags']]
     tags_data = [' '.join(tag for tag in tags) for tags in tags_data]
@@ -366,24 +375,29 @@ def preproc_data(text_tokenizer):
     #trying out not padding here bc the data collator will pad
     #model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=True, truncation=True, return_tensors='pt')
     #labels = text_tokenizer(targets, max_length=max_target_length, padding=True, truncation=True, return_tensors='pt')
-    model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=False, truncation=True)
-    labels = text_tokenizer(targets, max_length=max_target_length, padding=False, truncation=True)
+    print(f"inputs: {inputs}")
+    print(f"targets: {targets}")
+    print(f"max input length: {max_input_length}")
+    model_inputs = text_tokenizer(inputs, text_target=targets, max_length=max_input_length, padding=False, truncation=True)
+    #with text_tokenizer.as_target_tokenizer():
+    #    labels = text_tokenizer(targets, max_length=max_target_length, padding=False, truncation=True)
     model_tag_inputs = [tag_tokenizer.encode(tags).ids[:max_tag_length] for tags in tags_data]
     
 
     #testing effect of snt ln on memory
-    data_trunc_test_len = 25
+    """
+    data_trunc_test_len = 1000
     model_inputs['input_ids'] = [ex[:data_trunc_test_len] for ex in model_inputs['input_ids']]
     labels['input_ids'] = [ex[:data_trunc_test_len] for ex in labels['input_ids']]
     model_tag_inputs = [ex[:data_trunc_test_len] for ex in model_tag_inputs]
     #model_inputs['input_ids'] = [ex for ex in model_inputs['input_ids']]
     #labels['input_ids'] = [ex for ex in labels['input_ids']]
     #model_tag_inputs = [ex for ex in model_tag_inputs]
-
-
+    """
+    print(model_inputs)
     #model_tag_inputs = [enc + [0] * (max_input_length - len(enc)) if len(enc) < max_input_length else enc[:max_input_length] for enc in model_tag_inputs]
     #model_tag_inputs = torch.tensor(model_tag_inputs)
-    model_inputs['labels'] = labels['input_ids']
+    #model_inputs['labels'] = labels['input_ids']
     model_inputs['tags'] = model_tag_inputs
     model_inputs = Dataset.from_dict(model_inputs)
     return model_inputs
@@ -462,15 +476,17 @@ def gen_training_args():
         eval_strategy='steps',
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
-        learning_rate=5e-5,
+        #learning_rate=5e-5,
         weight_decay=0.01,
         logging_dir='./test_logs',
         logging_steps=100,
         save_steps=500,
-        num_train_epochs=3,
+        num_train_epochs=1,
         predict_with_generate=True,
-        load_best_model_at_end=True,
-        save_total_limit=3
+        load_best_model_at_end=False,
+        save_total_limit=3,
+        warmup_steps=10,
+        #label_smoothing_factor=0.1
     )
     return training_args
 
@@ -479,16 +495,30 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
     src_lang = 'fi'
     trg_lang = 'en'
     #text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang))
-    data_collator = MorphModelDataCollator(text_tokenizer,model)
+    if isinstance(model, MorphM2M100):
+        data_collator = MorphModelDataCollator(text_tokenizer, model)
+    else:
+        data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
     training_args = gen_training_args()
-    #trainer = Seq2SeqTrainer(
-    trainer = ForwardOnlyTrainer(
+    #model.gradient_checkpointing_enable()
+    optimizer = AdamW(
+    #optimizer = Adafactor(
+        model.parameters(),
+        #scale_parameter=True,
+        #relative_step=False,
+        #warmup_init=False,
+        lr=5e-5
+    )
+
+    trainer = Seq2SeqTrainer(
+    #trainer = ForwardOnlyTrainer(
         model=model,
         args=training_args,
         train_dataset=data,
         eval_dataset=data,
         data_collator=data_collator,
-        compute_metrics=compute_metrics
+        compute_metrics=compute_metrics,
+        optimizers=(optimizer, None)
     )
     if to_train:
         trainer.train()
@@ -535,8 +565,8 @@ def main() -> None:
     print(f"cuda is available: {cuda.is_available()}")
     print(f"cuda current device: {cuda.current_device()}")
     print(f"cuda current device name: {cuda.get_device_name(cuda.current_device())}")
-    cuda.empty_cache()
-    cuda.reset_max_memory_allocated()
+    #cuda.empty_cache()
+    #cuda.reset_max_memory_allocated()
     #print(cuda.memory_summary())
     #finetune_and_eval('facebook/nllb-200-distilled-600M', 'Morph', 'en', 'fi')
     #return
@@ -544,14 +574,24 @@ def main() -> None:
 
     #model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distilled-600m')
 
-    #model = create_model()
+    model = create_model()
 
-    model = create_baseline_model()
+    #model = create_baseline_model()
+    #model.config.decoder_start_token_id = 256047
+    #model.config.bos_token_id = 256042
     #model.gradient_checkpointing_enable()
     src_lang = 'fi'
     trg_lang = 'en'
+    src_nllb = utils.get_nllb_code(src_lang)
+    trg_nllb = utils.get_nllb_code(trg_lang)
+    print(src_nllb)
+    print(trg_nllb)
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
-    text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang), tgt_lang=utils.get_nllb_code(trg_lang))
+    text_tokenizer = NllbTokenizer.from_pretrained(
+        initial_checkpoint,
+        src_lang=src_nllb,
+        tgt_lang=trg_nllb
+        )
 
     #device = torch.device('cuda')
     #model.to(device)
@@ -560,7 +600,7 @@ def main() -> None:
     data = preproc_data(text_tokenizer)
     #data.to(device)
     print('about to train')
-    morph_train_with_trainer(model, data, text_tokenizer, to_train=True, to_eval=True)
+    morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eval=True)
     print(f"dataset size: {data.num_rows}")
     #outputs = model(data['input_ids'], data['tags'], attention_mask=data['attention_mask'], labels=data['labels'])
     #outputs = model(data['input_ids'], attention_mask=data['attention_mask'], labels=data['labels'])
