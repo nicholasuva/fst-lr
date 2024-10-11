@@ -316,8 +316,8 @@ def create_model():
     print('creating model')
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
     #text_tokenizer = xxxxx
-    config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
-    model = MorphM2M100(config)
+    #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
+    model = MorphM2M100(initial_checkpoint)
     if False:
         peft_config = LoraConfig(
             task_type=TaskType.SEQ_2_SEQ_LM,
@@ -336,6 +336,7 @@ def create_baseline_model():
     #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
     #model = MorphM2M100(config)
     model = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint)
+    #model = M2M100ForConditionalGeneration(config)
     if False:
         peft_config = LoraConfig(
             task_type=TaskType.SEQ_2_SEQ_LM,
@@ -394,12 +395,14 @@ def preproc_data(text_tokenizer):
     #labels['input_ids'] = [ex for ex in labels['input_ids']]
     #model_tag_inputs = [ex for ex in model_tag_inputs]
     """
-    print(model_inputs)
+    
     #model_tag_inputs = [enc + [0] * (max_input_length - len(enc)) if len(enc) < max_input_length else enc[:max_input_length] for enc in model_tag_inputs]
     #model_tag_inputs = torch.tensor(model_tag_inputs)
     #model_inputs['labels'] = labels['input_ids']
     model_inputs['tags'] = model_tag_inputs
+    print(f"model inputs dict: {model_inputs}")
     model_inputs = Dataset.from_dict(model_inputs)
+    print(f"model inputs dataset: {model_inputs}")
     return model_inputs
 
 
@@ -494,8 +497,11 @@ def gen_training_args():
 def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eval=False):
     src_lang = 'fi'
     trg_lang = 'en'
+    trg_lang_nllb_code = utils.get_nllb_code(trg_lang)
+    trg_lang_nllb_id = text_tokenizer.convert_tokens_to_ids(trg_lang_nllb_code)
     #text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang))
-    if isinstance(model, MorphM2M100):
+    if False:
+    #if isinstance(model, MorphM2M100):
         data_collator = MorphModelDataCollator(text_tokenizer, model)
     else:
         data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
@@ -510,6 +516,7 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
         lr=5e-5
     )
 
+    #trainer = MorphSeq2SeqTrainer(
     trainer = Seq2SeqTrainer(
     #trainer = ForwardOnlyTrainer(
         model=model,
@@ -518,12 +525,13 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
         eval_dataset=data,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        optimizers=(optimizer, None)
+        optimizers=(optimizer, None),
     )
     if to_train:
         trainer.train()
     if to_eval:
-        results = trainer.evaluate()
+        results = trainer.evaluate(forced_bos_token_id=trg_lang_nllb_id)
+        #results = trainer.evaluate()
         print(f"results: {results}")
         with open('first_try_model_results.txt', 'w') as sink:
             sink.write(str(results))
@@ -533,17 +541,6 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
 
 
 
-def morph_forward_only_test():
-    data = preproc_data()
-    print(f"data type {type(data)}")
-    #data=data[:1]
-    print(f"data type {type(data)}")
-    model = create_model()
-    tokenizer = NllbTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
-    data_collator = MorphModelDataCollator(tokenizer, model)
-    data = data_collator(data)
-    forward_outputs = model.forward(input_ids=data['input_ids'], tags=data['tags'], labels=data['labels'], attention_mask=data['attention_mask'])
-    return forward_outputs
 
 
 def main() -> None:
@@ -574,9 +571,12 @@ def main() -> None:
 
     #model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distilled-600m')
 
-    model = create_model()
 
+    #################################
+    model = create_model()
     #model = create_baseline_model()
+    ##############################
+
     #model.config.decoder_start_token_id = 256047
     #model.config.bos_token_id = 256042
     #model.gradient_checkpointing_enable()
