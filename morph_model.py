@@ -1,6 +1,6 @@
 from transformers import M2M100ForConditionalGeneration, M2M100Config, Seq2SeqTrainer, DataCollatorForSeq2Seq
-from transformers.modeling_outputs import Seq2SeqLMOutput
-from transformers.models.m2m_100.modeling_m2m_100 import M2M100Encoder
+from transformers.modeling_outputs import Seq2SeqLMOutput, Seq2SeqModelOutput, BaseModelOutput
+from transformers.models.m2m_100.modeling_m2m_100 import M2M100Encoder, shift_tokens_right
 from torch import cat, float16
 import torch
 import utils
@@ -8,35 +8,44 @@ from typing import Optional, Tuple, Union
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-#model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distilled-600M')
-#config = M2M100Config.from_pretrained('facebook/nllb-200-distilled-600M')
-
-def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start_token_id: int):
-    """
-    Shift input ids one token to the right.
-    """
-    shifted_input_ids = input_ids.new_zeros(input_ids.shape)
-    shifted_input_ids[:, 1:] = input_ids[:, :-1].clone()
-    shifted_input_ids[:, 0] = decoder_start_token_id
-
-    if pad_token_id is None:
-        raise ValueError("self.model.config.pad_token_id has to be defined.")
-    # replace possible -100 values in labels by `pad_token_id`
-    shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
-
-    return shifted_input_ids
-
 
 #class MorphM2M100(torch.nn.Module):
 class MorphM2M100(M2M100ForConditionalGeneration):
-    def __init__(self, checkpoint):
+    #in use
+    def __init__(
+        self,
+        checkpoint,
+        morph_encoder_config,
+        freeze_base_encoder=False,
+        encoder_scheme="embed_dim"
+        ):
+        """
+        possible encoder_scheme values:
+            "embed_dim": concatenate encoder inputs along embedding dimension
+        """
+        #create base encoder-decoder model and lm_head from pretrained checkpoint
         source_model = M2M100ForConditionalGeneration.from_pretrained(checkpoint)
         config = source_model.config
         super().__init__(config)
         self.model = source_model.model
         self.lm_head = source_model.lm_head
+        
+        #create new encoder for morph tags from config
+        self.morph_encoder = M2M100Encoder(morph_encoder_config)
 
+        #create projection layer for correncting concatenated dimension
+        if encoder_scheme == "embed_dim":
+            self.projection_layer = torch.nn.Linear(
+                config.d_model+morph_encoder_config.d_model,
+                config.d_model
+                )
 
+        #freeze parameters in base model encoder
+        if freeze_base_encoder:
+            for param in self.model.encoder.parameters():
+                param.requires_grad = False
+
+    #deprecated
     def legacy__init__(self, config, max_length=200):
         print('before model initialized')
         utils.log_memory_usage()
@@ -84,12 +93,14 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         return combined_encoder_outputs
     """
 
+    #deprecated
     def _generate_causal_mask(self, decoder_input_ids):
         seq_len = decoder_input_ids.size(1)
         causal_mask = torch.tril(torch.ones((seq_len, seq_len), device=decoder_input_ids.device)).unsqueeze(0).unsqueeze(0)
         return causal_mask
 
-    def minimum_wrap_forward(
+    #deprecated
+    def wrap_forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         tags: Optional[torch.LongTensor] = None,
@@ -130,7 +141,174 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         )
         return result
 
-    def new_forward(
+    #for testing
+    def base_model_unmodified_forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        decoder_input_ids: Optional[torch.LongTensor] = None,
+        decoder_attention_mask: Optional[torch.LongTensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        decoder_head_mask: Optional[torch.Tensor] = None,
+        cross_attn_head_mask: Optional[torch.Tensor] = None,
+        encoder_outputs: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple[torch.Tensor], Seq2SeqModelOutput]:
+        output_attentions = output_attentions if output_attentions is not None else self.model.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.model.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.model.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.model.config.use_return_dict
+
+        if encoder_outputs is None:
+            encoder_outputs = self.model.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+        # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
+        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=encoder_outputs[0],
+                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
+            )
+
+        # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
+        decoder_outputs = self.model.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_outputs[0],
+            encoder_attention_mask=attention_mask,
+            head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        if not return_dict:
+            return decoder_outputs + encoder_outputs
+
+        return Seq2SeqModelOutput(
+            last_hidden_state=decoder_outputs.last_hidden_state,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
+
+    #in use
+    def modified_inner_forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        tags: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        tags_attention_mask: Optional[torch.Tensor] = None,        
+        decoder_input_ids: Optional[torch.LongTensor] = None,
+        decoder_attention_mask: Optional[torch.LongTensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        decoder_head_mask: Optional[torch.Tensor] = None,
+        cross_attn_head_mask: Optional[torch.Tensor] = None,
+        encoder_outputs: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple[torch.Tensor], Seq2SeqModelOutput]:
+        output_attentions = output_attentions if output_attentions is not None else self.model.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.model.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.model.config.use_cache
+        return_dict = return_dict if return_dict is not None else self.model.config.use_return_dict
+
+        if encoder_outputs is None:
+            encoder_outputs = self.model.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+            #print(f"encoder outputs type: {type(encoder_outputs)}")
+            morph_encoder_outputs = self.morph_encoder(
+                input_ids=tags,
+                attention_mask=tags_attention_mask,
+                head_mask=head_mask, # do i need this for the morph encoder? do I need a separate one?
+            )
+            combined_encoder_outputs = cat((encoder_outputs.last_hidden_state, morph_encoder_outputs.last_hidden_state), dim=-1)
+            projected_encoder_outputs = self.projection_layer(combined_encoder_outputs)
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=projected_encoder_outputs[0],
+                hidden_states=projected_encoder_outputs[1] if len(projected_encoder_outputs) > 1 else None,
+                attentions=projected_encoder_outputs[2] if len(projected_encoder_outputs) > 2 else None,
+            )
+            #print(f"modified encoder outputs type: {type(encoder_outputs)}")
+
+
+        # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
+        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
+            encoder_outputs = BaseModelOutput(
+                last_hidden_state=encoder_outputs[0],
+                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
+                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
+            )
+
+        # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
+        decoder_outputs = self.model.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_outputs[0],
+            encoder_attention_mask=attention_mask,
+            head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        if not return_dict:
+            return decoder_outputs + encoder_outputs
+
+        return Seq2SeqModelOutput(
+            last_hidden_state=decoder_outputs.last_hidden_state,
+            past_key_values=decoder_outputs.past_key_values,
+            decoder_hidden_states=decoder_outputs.hidden_states,
+            decoder_attentions=decoder_outputs.attentions,
+            cross_attentions=decoder_outputs.cross_attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
+            encoder_hidden_states=encoder_outputs.hidden_states,
+            encoder_attentions=encoder_outputs.attentions,
+        )
+
+    #in use
+    def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         tags: Optional[torch.LongTensor] = None,
@@ -159,7 +337,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
 
         Returns:
         """
-        #raise ValueError("where is the call fct??????????//")
+        #copied from the forward fct from M2M100ForConditionalGeneration
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if labels is not None:
@@ -167,10 +345,31 @@ class MorphM2M100(M2M100ForConditionalGeneration):
                 decoder_input_ids = shift_tokens_right(
                     labels, self.config.pad_token_id, self.config.decoder_start_token_id
                 )
-
+        """
         outputs = self.model(
             input_ids,
             attention_mask=attention_mask,
+            decoder_input_ids=decoder_input_ids,
+            encoder_outputs=encoder_outputs,
+            decoder_attention_mask=decoder_attention_mask,
+            head_mask=head_mask,
+            decoder_head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            decoder_inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        """
+        outputs = self.modified_inner_forward(
+        #outputs = self.base_model_unmodified_forward(
+            input_ids,
+            tags=tags,
+            attention_mask=attention_mask,
+            tags_attention_mask=tags_attention_mask,
             decoder_input_ids=decoder_input_ids,
             encoder_outputs=encoder_outputs,
             decoder_attention_mask=decoder_attention_mask,
@@ -210,7 +409,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             encoder_attentions=outputs.encoder_attentions,
         )
 
-
+    #deprecated
     def legacy_forward(
                 self,
                 input_ids=None,
@@ -229,7 +428,6 @@ class MorphM2M100(M2M100ForConditionalGeneration):
                 use_morph_encoder=False,
                 **kwargs
     ):
-        raise ValueError("where is the call fct??????????//")
 
         print("-------------start custom forward--------------------")
         print(f"input ids shape: {input_ids.size() if input_ids is not None else None}")
@@ -256,7 +454,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
                 morph_encoder_outputs = self.morph_encoder(
                     input_ids=tags,
                     attention_mask=tags_attention_mask,
-                    head_mask=head_mask,
+                    head_mask=head_mask, #do i need this? do I need to make a new one?
                     **kwargs
                     )
                 print(f"morph_encoder_outputs shape: {morph_encoder_outputs.last_hidden_state.shape}")
@@ -393,6 +591,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         else:
             return Seq2SeqLMOutput(logits=logits)
     
+#in use
 class MorphModelDataCollator(DataCollatorForSeq2Seq):
     """
     pads such that the lang input_ids and tags are padded to the same sequence length
@@ -403,6 +602,7 @@ class MorphModelDataCollator(DataCollatorForSeq2Seq):
     #    self.model = model
     #    self.padding = padding
 
+    #in use
     def __call__(self, data):
         #print(f"custom data collator input: {data}")
         #print(f"custom data collator input: {[d for d in data]}")
@@ -465,7 +665,8 @@ class MorphModelDataCollator(DataCollatorForSeq2Seq):
             collated_data['tags'] = batch_tags.long()
 
         return collated_data
-    
+
+#deprecated 
 class ForwardOnlyTrainer(Seq2SeqTrainer):
     """
     def training_step(self, model, inputs):

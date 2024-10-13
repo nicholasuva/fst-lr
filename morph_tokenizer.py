@@ -14,10 +14,10 @@ def create_morph_tokenizer(
     data = cat_tag_data()
     dataset = load_from_disk('en-fi-combined.hf')
     data = dataset['train']['fi tags']
-    print(data[0])
+    #print(data[0])
     data = [' '.join(tag for tag in tags) for tags in data]
     data = [sent.replace('+', '') for sent in data]
-    print(data[0])
+    #print(data[0])
     tokenizer = Tokenizer(models.WordLevel(unk_token='[UNK]'))
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     trainer = trainers.WordLevelTrainer(special_tokens=['[UNK]', '[PAD]', '[CLS]', '[SEP]'])
@@ -25,12 +25,12 @@ def create_morph_tokenizer(
     tokenizer.save('morph_tag_tokenizer.json')
     test_sent = data[0]
     encoded = tokenizer.encode(test_sent)
-    print(encoded.tokens)
-    print(encoded.ids)
+    #print(encoded.tokens)
+    #print(encoded.ids)
     return tokenizer
 
 def main():
-    tokenizer = create_tokenizer()
+    tokenizer = create_morph_tokenizer()
     return
 
 if __name__ == "__main__":

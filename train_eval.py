@@ -34,7 +34,7 @@ HSA_OVERRIDE_GFX_VERSION=1030
 
 
 
-
+#deprecated
 def create_preprocess_function(
         tokenizer,
         model_scheme: str, 
@@ -72,7 +72,7 @@ def create_preprocess_function(
 
 
 
-
+#deprecated
 def load_tokenized_inputs(
     tokenizer: T5Tokenizer,
     src_lang: str,
@@ -88,14 +88,14 @@ def load_tokenized_inputs(
     return tokenized_datasets
 
 
-
+#in use
 def compute_metrics(
         eval_preds
     ):
     """
     
     """
-    print(f"-----------beginning compute metrics-----------")
+    print(f"-----------compute metrics-----------")
     #print(f"eval preds fields: {[entry for entry in eval_preds]}")
     #print(f"eval preds content: {[eval_preds[entry] for entry in eval_preds]}")
     tokenizer = NllbTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
@@ -104,10 +104,10 @@ def compute_metrics(
     logits, labels = eval_preds
     logits_lang_codes = tokenizer.batch_decode([sent[0] for sent in logits], skip_special_tokens=True)
     labels_lang_codes = tokenizer.batch_decode([sent[0] for sent in labels], skip_special_tokens=True)
-    print(f"logit lang codes: {logits_lang_codes}")
-    print(f"label lang codes: {labels_lang_codes}")
-    print(f"logits {logits}")
-    print(f"labels: {labels}")
+    #print(f"logit lang codes: {logits_lang_codes}")
+    #print(f"label lang codes: {labels_lang_codes}")
+    #print(f"logits {logits}")
+    #print(f"labels: {labels}")
     if isinstance(logits, tuple):
         logits = logits[0]
 
@@ -116,13 +116,13 @@ def compute_metrics(
     #labels = labels[0]
     #print(f"preds: {preds}")
     decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-    print(f"decoded preds: {decoded_preds}")
+    #print(f"decoded preds: {decoded_preds}")
 
     # Replace -100 in the labels as we can't decode them.
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
     #print(f"labels: {labels}")
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-    print(f"decoded labels: {decoded_labels}")
+    #print(f"decoded labels: {decoded_labels}")
 
     # Some simple post-processing
     #decoded_preds = [pred.strip() for pred in preds]
@@ -162,6 +162,7 @@ def compute_metrics(
     return result
 """
 
+#deprecated
 def finetune_and_eval(
         model_checkpoint,
         model_scheme: str,
@@ -278,7 +279,7 @@ def finetune_and_eval(
 
 
 
-
+#deprecated
 def eval(
         model_checkpoint,
         src_lang: str,
@@ -312,12 +313,23 @@ def eval(
     return
 
 
+#in use
 def create_model():
     print('creating model')
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+    morph_encoder_config = M2M100Config(
+        vocab_size=1024,
+        encoder_layers=2,
+        d_model=1024,
+        dropout=0.1,
+        encoder_layerdrop=0,
+        pad_token_id=1,
+        max_position_embeddings=1024,
+        scale_embedding=True,
+    )
     #text_tokenizer = xxxxx
     #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
-    model = MorphM2M100(initial_checkpoint)
+    model = MorphM2M100(initial_checkpoint, morph_encoder_config)
     if False:
         peft_config = LoraConfig(
             task_type=TaskType.SEQ_2_SEQ_LM,
@@ -329,6 +341,7 @@ def create_model():
     print('model created')
     return model
 
+#in use
 def create_baseline_model():
     print('creating model')
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
@@ -348,6 +361,39 @@ def create_baseline_model():
     print('model created')
     return model
 
+#in use
+def tokenize_dataset(
+    text_tokenizer,
+    tag_tokenizer,
+    src_lang,
+    trg_lang,
+    max_length=200
+    ):
+    #load the dataset
+    try:
+        dataset_dict = load_from_disk(f"{src_lang}-{trg_lang}-combined.hf")
+    except:
+        dataset_dict = load_from_disk(f"{trg_lang}-{src_lang}-combined.hf")
+    tokenized_dict = {}
+    for split in dataset_dict:
+        print(f"split: {split}")
+        dataset = dataset_dict[split]
+        inputs = [(ex[src_lang]) for ex in dataset['translation']]
+        targets = [(ex[trg_lang]) for ex in dataset['translation']]
+        tags_data = [ex for ex in dataset[f'{src_lang} tags']]
+        tags_data = [' '.join(tag for tag in tags) for tags in tags_data]
+        tags_data = [sent.replace('+', '') for sent in tags_data]
+        model_inputs = text_tokenizer(inputs, text_target=targets, max_length=max_length, padding=False, truncation=True)
+        model_tag_inputs = [tag_tokenizer.encode(tags).ids[:max_length] for tags in tags_data]
+        model_inputs['tags'] = model_tag_inputs
+        model_inputs = Dataset.from_dict(model_inputs)
+        tokenized_dict[split] = model_inputs
+    tokenized_dataset_dict = DatasetDict(tokenized_dict)
+    print(f"final processed thing: {tokenized_dataset_dict}")
+    return tokenized_dataset_dict
+
+
+#in use, to be deprecated
 def preproc_data(text_tokenizer):
     src_lang = 'fi'
     trg_lang = 'en'
@@ -358,7 +404,7 @@ def preproc_data(text_tokenizer):
     max_target_length = max_length
     dataset = load_from_disk('en-fi-combined.hf')
     #dataset= dataset['train'].select(range(1))
-    dataset= dataset['train'].train_test_split(test_size=0.00005)['test']
+    dataset= dataset['train'].train_test_split(test_size=0.0005)['test']
 
     prefix = utils.get_nllb_code(trg_lang) + ' ' #this is wrong I need prefix on the trg lang for nllb ugh wait maybe this is right
     #inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
@@ -405,7 +451,7 @@ def preproc_data(text_tokenizer):
     print(f"model inputs dataset: {model_inputs}")
     return model_inputs
 
-
+#deprecated
 def create_dataloaders():
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
     #text_tokenizer = M2M100Tokenizer.from_pretrained(initial_checkpoint)
@@ -415,8 +461,7 @@ def create_dataloaders():
     dataloader = DataLoader(data, batch_size=1, shuffle=False)
     return dataloader
 
-
-
+#deprecated
 def morph_custom_train(
         model: MorphM2M100,
         train_dataloader,
@@ -471,7 +516,7 @@ def morph_custom_train(
         #need to like save the model somehow
     return
 
-
+#in use
 def gen_training_args():
     training_args = Seq2SeqTrainingArguments(
         output_dir='./test_results',
@@ -493,15 +538,15 @@ def gen_training_args():
     )
     return training_args
 
-
+#in use
 def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eval=False):
     src_lang = 'fi'
     trg_lang = 'en'
     trg_lang_nllb_code = utils.get_nllb_code(trg_lang)
     trg_lang_nllb_id = text_tokenizer.convert_tokens_to_ids(trg_lang_nllb_code)
     #text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang))
-    if False:
-    #if isinstance(model, MorphM2M100):
+    #if False:
+    if isinstance(model, MorphM2M100):
         data_collator = MorphModelDataCollator(text_tokenizer, model)
     else:
         data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
@@ -521,8 +566,8 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
     #trainer = ForwardOnlyTrainer(
         model=model,
         args=training_args,
-        train_dataset=data,
-        eval_dataset=data,
+        train_dataset=data['train'].train_test_split(test_size=0.1)['test'],
+        eval_dataset=data['test'].train_test_split(test_size=0.05)['test'],
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         optimizers=(optimizer, None),
@@ -533,14 +578,11 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
         results = trainer.evaluate(forced_bos_token_id=trg_lang_nllb_id)
         #results = trainer.evaluate()
         print(f"results: {results}")
-        with open('first_try_model_results.txt', 'w') as sink:
+        with open('fi-en-morph-embed-dim-cat-first_try_model_results.txt', 'w') as sink:
             sink.write(str(results))
-    trainer.save_model('./first_try_test_model')
+    trainer.save_model('./fi-en-morph-embed-dim-cat-first_try_test_model')
     
     return
-
-
-
 
 
 def main() -> None:
@@ -571,6 +613,25 @@ def main() -> None:
 
     #model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distilled-600m')
 
+    src_lang = 'fi'
+    trg_lang = 'en'
+    src_nllb = utils.get_nllb_code(src_lang)
+    trg_nllb = utils.get_nllb_code(trg_lang)
+    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+    text_tokenizer = NllbTokenizer.from_pretrained(
+        initial_checkpoint,
+        src_lang=src_nllb,
+        tgt_lang=trg_nllb
+        )
+    tag_tokenizer = create_morph_tokenizer()
+    dataset_dict = tokenize_dataset(
+        text_tokenizer=text_tokenizer,
+        tag_tokenizer=tag_tokenizer,
+        src_lang=src_lang,
+        trg_lang=trg_lang
+        )
+
+
 
     #################################
     model = create_model()
@@ -580,28 +641,17 @@ def main() -> None:
     #model.config.decoder_start_token_id = 256047
     #model.config.bos_token_id = 256042
     #model.gradient_checkpointing_enable()
-    src_lang = 'fi'
-    trg_lang = 'en'
-    src_nllb = utils.get_nllb_code(src_lang)
-    trg_nllb = utils.get_nllb_code(trg_lang)
-    print(src_nllb)
-    print(trg_nllb)
-    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
-    text_tokenizer = NllbTokenizer.from_pretrained(
-        initial_checkpoint,
-        src_lang=src_nllb,
-        tgt_lang=trg_nllb
-        )
+    
 
     #device = torch.device('cuda')
     #model.to(device)
     #for param in model.model.encoder.parameters():
         #param.requires_grad = False
-    data = preproc_data(text_tokenizer)
+    #data = preproc_data(text_tokenizer)
     #data.to(device)
     print('about to train')
-    morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eval=True)
-    print(f"dataset size: {data.num_rows}")
+    morph_train_with_trainer(model, dataset_dict, text_tokenizer, to_train=True, to_eval=True)
+    #print(f"dataset size: {data.num_rows}")
     #outputs = model(data['input_ids'], data['tags'], attention_mask=data['attention_mask'], labels=data['labels'])
     #outputs = model(data['input_ids'], attention_mask=data['attention_mask'], labels=data['labels'])
     #print(outputs)
