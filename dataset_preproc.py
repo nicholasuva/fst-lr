@@ -10,6 +10,11 @@ from io import TextIOWrapper
 import utils
 import hfst
 
+
+hf_datasets_list = [
+    ''
+]
+
 def load_datasets(
         dataset_name_list: list[str],
         lang1: str,
@@ -449,6 +454,7 @@ def preproc_dataset(
         ) -> DatasetDict:
     """
     preprocessing pipeline to download, clean, deduplicate and split datasets
+    and save them
     """
     log_filename = lang1 + '_' + lang2 + '_' + 'dataset_preproc_log.txt'
     with open(log_filename, 'w') as sink:
@@ -462,6 +468,7 @@ def preproc_dataset(
         dataset = add_src_morph_tags(dataset, lang2, sink)
         dataset = remove_extra_columns(dataset)
         split_ds_dict = split_dataset(dataset, lang1, lang2, sink)
+        save_dataset_dict(split_ds_dict, lang1, lang2)
     return split_ds_dict
 
 
@@ -473,11 +480,18 @@ def main():
     #with open('morph_test_log.txt', 'w') as sink:
         #test_dataset = add_src_morph_tags(test_dataset, 'fi', sink)
     #return
+    args1 = {
+        'dataset_name_list': ['tatoeba', 'kde4'],
+        'lang1': 'en',
+        'lang2': 'fi'
+    }
+    split_ds_dict = preproc_dataset(**args1)
+    return
 
 
 
     split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'fi')
-    save_dataset_dict(split_ds_dict, 'en', 'fi')
+    #save_dataset_dict(split_ds_dict, 'en', 'fi')
     return
 
 
