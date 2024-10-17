@@ -4,18 +4,363 @@ from nltk.tokenize import word_tokenize
 from minhash_deduplication import deduplicate_dataset
 from transformers import T5Tokenizer
 import sys
-
+import subprocess
 from io import TextIOWrapper
 
 import utils
 import hfst
-
+import json
 
 hf_datasets_list = [
     ''
 ]
 
+nllb_test = [
+    ('aka', 'Akan'),
+    ('amh', 'Amharic'),
+    ('ara', 'Arabic'),
+    ('aym', 'Aymara'),
+    ('bak', 'Bashkir'),
+    ('bul', 'Bulgarian'),
+    ('ces', 'Czech'),
+    ('deu', 'German'),
+    ('eng', 'English'),
+    ('epo', 'Esperanto'),
+    ('est-x-plamk', 'Estonian (plamk)'),
+    ('est-x-utee', 'Estonian (utee)'),
+    ('fao', 'Faroese'),
+    ('fin', 'Finnish'),
+    ('gle', 'Irish'),
+    ('grn', 'Guarani'),
+    ('hin', 'Hindi'),
+    ('hun', 'Hungarian'),
+    ('khk', 'Halh Mongolian'),
+    ('lit', 'Lithuanian'),
+    ('luo', 'Luo (Kenya and Tanzania)'),
+    ('nno', 'Norwegian Nynorsk'),
+    ('nno-x-ext-apertium', 'Norwegian Nynorsk (Apertium)'),
+    ('nob', 'Norwegian Bokmål'),
+    ('ron', 'Romanian'),
+    ('rus', 'Russian'),
+    ('som', 'Somali'),
+    ('sqi', 'Albanian'),
+    ('swe', 'Swedish'),
+    ('tat', 'Tatar'),
+    ('tel', 'Telugu'),
+    ('tgl', 'Tagalog'),
+    ('tha', 'Thai'),
+    ('tir', 'Tigrinya'),
+    ('zul-x-exp', 'Zulu')
+]
+
+nllb_and_giellalt_low_resource_langs = [
+    ('aka', 'Akan'),
+    ('amh', 'Amharic'),
+    ('aym', 'Aymara'),
+    ('bak', 'Bashkir'),
+    ('fao', 'Faroese'),
+    ('gle', 'Irish'),
+    ('grn', 'Guarani'),
+    ('luo', 'Luo (Kenya and Tanzania)'),
+    ('som', 'Somali'),
+    ('tat', 'Tatar'),
+    ('tgl', 'Tagalog'),
+    ('tir', 'Tigrinya'),
+    ('zul-x-exp', 'Zulu')
+]
+
+corpus_list = [
+    'facebook/flores', 
+    'Helsinki-NLP/qed_amara', #no
+    'Helsinki-NLP/opus-100', #yes
+    'Helsinki-NLP/opus_gnome', #no
+    'Helsinki-NLP/opus_ubuntu', #no
+    'Helsinki-NLP/tatoeba', #no
+    'Helsinki-NLP/tatoeba_mt', #no
+    'Helsinki-NLP/open_subtitles', #no
+    'mteb/NTREX', #what is it? also davidstap/NTREX?
+    'ayymen/Weblate-Translations', #not sure what it is, need to look into
+    'ayymen/Pontoon-Translations',
+    'visheratin/laion-coco-nllb', #need to look
+    'bible-nlp/biblenlp-corpus',
+    'yhavinga/ccmatrix',
+    'nazimali/quran',
+]
+
+corpus_dict = {
+    'facebook/flores': ['ak', 'am', 'ba'], 
+    'Helsinki-NLP/qed_amara': ['ak', 'am', 'ay'],
+    'Helsinki-NLP/opus-100': ['am'],
+    'Helsinki-NLP/opus_gnome': ['am'],
+    'Helsinki-NLP/opus_ubuntu': ['ak', 'am'],
+    'Helsinki-NLP/tatoeba': ['am'],
+    'Helsinki-NLP/tatoeba_mt': [],
+    'Helsinki-NLP/open_subtitles': [],
+    'mteb/NTREX': ['am'], #what is it? also davidstap/NTREX?
+    'ayymen/Weblate-Translations': ['ak', 'am', 'ay'], #not sure what it is: [], need to look into
+    'ayymen/Pontoon-Translations': ['am', 'ay'],
+    'visheratin/laion-coco-nllb': ['ak'], #need to look
+    'bible-nlp/biblenlp-corpus': [],
+    'yhavinga/ccmatrix': ['am'],
+    'nazimali/quran': []
+}
+
+
+chosen_langs_with_corpora = [
+    ('aka', 'Akan'),
+    ('amh', 'Amharic'),
+    ('aym', 'Aymara'),
+    ('bak', 'Bashkir'),
+    ('fao', 'Faroese'),
+    ('gle', 'Irish'),
+    ('grn', 'Guarani'),
+    ('luo', 'Luo (Kenya and Tanzania)'),
+    ('som', 'Somali'),
+    ('tat', 'Tatar'),
+    ('tgl', 'Tagalog'),
+    ('tir', 'Tigrinya'),
+    ('zul-x-exp', 'Zulu')
+]
+
+
+
+#ideally deduping will make it not a problem to accidentally reuse same or similar corpora
+#possibly should just do helsinki-nlp/* since all their corpora are probably formatted the same
+
+
+#spanish and turkish failed to build hfst taggers properly
+
+
+
+def dict_from_json(filename):
+    with open(filename) as source:
+        data = json.load(source)
+    return data
+
+
+def build_hfst_taggers(lang_code_list):
+    codes, names = zip(*lang_code_list)
+    for code in codes:
+        subprocess.run(["./build_hfst_tagger.sh", code])
+    return
+
+def check_for_tokenizer(lang_code_list):
+    codes, names = zip(*lang_code_list)
+    for code in codes:
+        subprocess.run(["head", "./lang-"+code+"/src/fst/analyser-gt-desc.hfstol", "--lines=0"])
+    return
+
+
+
+
+
+def load_and_format_flores_ds(
+        dataset_path,
+        lang1, #expected in 2letter iso format
+        lang2
+):
+    """
+    Works with:
+        facebook/flores
+    flores datasets must be called with one keyword, formatted like 'lang_Script-lang_Script', eg: 'eng_Latn-aka_Latn'
+    flores datasets are formatted like this:
+    features: ['id', 'URL', 'domain', 'topic', 'has_image', 'has_hyperlink', 'sentence_eng_Latn', 'sentence_aka_Latn']
+    I want to format it 
+    """
+    lang1, lang2 = sorted([lang1, lang2])
+    lang1_nllb = utils.get_nllb_code(lang1)
+    lang2_nllb = utils.get_nllb_code(lang2)
+    dataset_dict = load_dataset(dataset_path, f"{lang1_nllb}-{lang2_nllb}", trust_remote_code=True)
+
+    """
+    try:
+        dataset_dict = load_dataset(dataset_path, f"{lang1_nllb}-{lang2_nllb}", trust_remote_code=True)
+    except:
+        dataset_dict = load_dataset(dataset_path, f"{lang2_nllb}-{lang1_nllb}-", trust_remote_code=True)
+    """
+    all_splits = []
+    for split in dataset_dict:
+        this_split = dataset_dict[split]
+        this_split = this_split.rename_column(f'sentence_{lang1_nllb}', f'{lang1}_text')
+        this_split = this_split.rename_column(f'sentence_{lang2_nllb}', f'{lang2}_text')
+        this_split = this_split.remove_columns(['id', 'URL', 'domain', 'topic', 'has_image', 'has_hyperlink'])
+        all_splits.append(this_split)
+    splits_combined = concatenate_datasets(all_splits)
+    return splits_combined
+
+
+def load_and_format_helsinki_opus_100_ds(
+    dataset_path,
+    lang1,
+    lang2,
+):
+    """
+    Works with:
+        Helsinki-NLP/opus-100 (and seemingly only that)
+    """
+    lang1, lang2 = sorted([lang1, lang2])
+    dataset_dict = load_dataset(dataset_path, f"{lang1}-{lang2}", trust_remote_code=True)
+    """
+    try:
+        dataset_dict = load_dataset(dataset_path, f"{lang1}-{lang2}", trust_remote_code=True)
+    except:
+        dataset_dict = load_dataset(dataset_path, f"{lang2}-{lang1}", trust_remote_code=True)
+    """
+    all_splits = []
+    for split in dataset_dict:
+        this_split = dataset_dict[split]
+        print(f"this split: {this_split}")
+        lang1_text = [sent[lang1] for sent in this_split['translation']]
+        print(f"lang1 text [0]: {lang1_text[0]}")
+        lang2_text = [sent[lang2] for sent in this_split['translation']]
+        print(f"lang2 text [0]: {lang2_text[0]}")
+        this_split = this_split.add_column(f'{lang1}_text', lang1_text)
+        this_split = this_split.add_column(f'{lang2}_text', lang2_text)
+        this_split = this_split.remove_columns(['translation', 'id'])
+        print(f"this split: {this_split}")
+        all_splits.append(this_split)
+    splits_combined = concatenate_datasets(all_splits)
+    return splits_combined
+
+
+
+def load_and_format_helsinki_tatoeba_ds(
+    dataset_path,
+    lang1,
+    lang2,
+):
+    """
+    Works with:
+        Helsinki-NLP/tatoeba 
+        Helsinki-NLP/qed_amara
+        omfg so the call format for load is right but qed amara usess iso 3 instead of 1 for SOME languages but not all why why why why why why why
+        so I can just like add some nested try statements I guess, to try and cover the options
+        oh my damn lord that is so silly i really cant even believe it oh my godddddddd
+        ok I think all of these sites do seem consistent in ordering their lang inputs alphabetically so i will write a fct to do that instead of having try except clauses
+
+    """
+    lang1, lang2 = sorted([lang1, lang2])
+    lang1_iso3 = utils.get_set3_code(lang1)
+    lang2_iso3 = utils.get_set3_code(lang2)
+    lang1_query = lang1
+    lang2_query = lang2
+    try:
+        dataset_dict = load_dataset(dataset_path, lang1=lang1, lang2=lang2, trust_remote_code=True)
+    except:
+        try:
+            dataset_dict = load_dataset(dataset_path, lang1=lang1_iso3, lang2=lang2, trust_remote_code=True)
+            lang1_query = lang1_iso3
+        except:
+            try:
+                dataset_dict = load_dataset(dataset_path, lang1=lang1, lang2=lang2_iso3, trust_remote_code=True)
+                lang2_query = lang2_iso3
+            except:
+                dataset_dict = load_dataset(dataset_path, lang1=lang1_iso3, lang2=lang2_iso3, trust_remote_code=True)
+                lang1_query = lang1_iso3
+                lang2_query = lang2_iso3
+    """
+    try:
+        dataset_dict = load_dataset(dataset_path, lang1=lang1, lang2=lang2, trust_remote_code=True)
+    except:
+        dataset_dict = load_dataset(dataset_path, lang1=lang2, lang2=lang1, trust_remote_code=True)
+    """
+    all_splits = []
+    for split in dataset_dict:
+        this_split = dataset_dict[split]
+        print(f"this split: {this_split}")
+        lang1_text = [sent[lang1_query] for sent in this_split['translation']]
+        print(f"lang1 text [0]: {lang1_text[0]}")
+        lang2_text = [sent[lang2_query] for sent in this_split['translation']]
+        print(f"lang2 text [0]: {lang2_text[0]}")
+        this_split = this_split.add_column(f'{lang1}_text', lang1_text)
+        this_split = this_split.add_column(f'{lang2}_text', lang2_text)
+        this_split = this_split.remove_columns(['translation', 'id'])
+        print(f"this split: {this_split}")
+        all_splits.append(this_split)
+    splits_combined = concatenate_datasets(all_splits)
+    return splits_combined
+
+    
+
+
+def manually_check_dataset_validity(
+        lang1,
+        lang2,
+        corpus_list #should be a tuple of hf datasets corpus path and loading schema
+):
+    return
+
 def load_datasets(
+        dataset_name_list: list[str],
+        lang1: str,
+        lang2: str,
+        sink: TextIOWrapper
+        ) -> list[Dataset]:
+    """
+    takes in a list of dataset names
+    corresponding to HuggingFace repo datasets
+    and a pair of languages
+    loads the datasets
+    adds a column of token counts to each dataset for logging
+    adds a column of each sentence pair concatenated to each dataset for ease of deduplication 
+    returns a list of datasets
+    containing parallel text in those languages
+    """
+    print('Loading datasets...')
+    dataset_list = []
+    
+    #flores
+    dataset_name = 'facebook/flores'
+    try:
+        this_dataset = load_and_format_flores_ds(dataset_name, lang1=lang1, lang2=lang2)
+        this_dataset = create_tokens_per_sentence_feature(this_dataset, lang1, lang2)
+        this_dataset = create_content_feature(this_dataset, lang1, lang2)
+        dataset_log_title = dataset_name+'_'+lang1+'_'+lang2
+        log_dataset_info(dataset_log_title, this_dataset, lang1, lang2, sink)
+        dataset_list.append(this_dataset)
+    except:
+        sink.write(f"unable to load dataset {dataset_name} for pair {lang1} {lang2}\n\n")
+
+    #OPUS-100
+    dataset_name = 'Helsinki-NLP/opus-100'
+    try:
+        this_dataset = load_and_format_helsinki_opus_100_ds(dataset_name, lang1=lang1, lang2=lang2)
+        this_dataset = create_tokens_per_sentence_feature(this_dataset, lang1, lang2)
+        this_dataset = create_content_feature(this_dataset, lang1, lang2)
+        dataset_log_title = dataset_name+'_'+lang1+'_'+lang2
+        log_dataset_info(dataset_log_title, this_dataset, lang1, lang2, sink)
+        dataset_list.append(this_dataset)
+    except:
+        sink.write(f"unable to load dataset {dataset_name} for pair {lang1} {lang2}\n\n")
+
+    #TATOEBA
+    dataset_name = 'Helsinki-NLP/tatoeba'
+    try:
+        this_dataset = load_and_format_helsinki_tatoeba_ds(dataset_name, lang1=lang1, lang2=lang2)
+        this_dataset = create_tokens_per_sentence_feature(this_dataset, lang1, lang2)
+        this_dataset = create_content_feature(this_dataset, lang1, lang2)
+        dataset_log_title = dataset_name+'_'+lang1+'_'+lang2
+        log_dataset_info(dataset_log_title, this_dataset, lang1, lang2, sink)
+        dataset_list.append(this_dataset)
+    except:
+        sink.write(f"unable to load dataset {dataset_name} for pair {lang1} {lang2}\n\n")
+
+    #qed amara
+    dataset_name = 'Helsinki-NLP/qed_amara'
+    try:
+        this_dataset = load_and_format_helsinki_tatoeba_ds(dataset_name, lang1=lang1, lang2=lang2)
+        this_dataset = create_tokens_per_sentence_feature(this_dataset, lang1, lang2)
+        this_dataset = create_content_feature(this_dataset, lang1, lang2)
+        dataset_log_title = dataset_name+'_'+lang1+'_'+lang2
+        log_dataset_info(dataset_log_title, this_dataset, lang1, lang2, sink)
+        dataset_list.append(this_dataset)
+    except:
+        sink.write(f"unable to load dataset {dataset_name} for pair {lang1} {lang2}\n\n")
+        
+    print('Datasets loaded.')
+    return dataset_list
+
+def legacy_load_datasets(
         dataset_name_list: list[str],
         lang1: str,
         lang2: str,
@@ -64,8 +409,8 @@ def create_tokens_per_sentence_feature(
     #tokenize and log tokens (not saving tokens because T5Tokenizer will be used for training)
     for i in range(len(dataset)):
         #calculate num tokens per sentence
-        lang1_num: int = len(word_tokenize(dataset[i]['translation'][lang1]))
-        lang2_num: int = len(word_tokenize(dataset[i]['translation'][lang2]))
+        lang1_num: int = len(word_tokenize(dataset[i][f'{lang1}_text']))
+        lang2_num: int = len(word_tokenize(dataset[i][f'{lang2}_text']))
         #add numbers to feature column
         this_num_tok = {lang1: lang1_num, lang2: lang2_num}
         num_tok_column.append(this_num_tok)
@@ -87,7 +432,7 @@ def create_content_feature(
     """
     content_column = []
     for pair in dataset:
-        this_string = pair['translation'][lang1] + ' ' + pair['translation'][lang2]
+        this_string = pair[f'{lang1}_text'] + ' ' + pair[f'{lang2}_text']
         content_column.append(this_string)
     dataset = dataset.add_column('content', content_column)
     return dataset
@@ -104,7 +449,7 @@ def log_dataset_info(
     """
     logs basic information about a dataset
     """
-    num_sentence_pairs: int = len(dataset['translation'])
+    num_sentence_pairs: int = len(dataset[f'{lang1}_text'])
     lang1_total_tokens: int = 0
     lang2_total_tokens: int = 0
     for pair in dataset:
@@ -179,8 +524,8 @@ def clean_dataset(dataset: Dataset,
     #the IDs of sentence pairs to be discarded
     exclude_rows = set()
     for i in range(len(dataset)):
-        lang1_sent = dataset[i]['translation'][lang1]
-        lang2_sent = dataset[i]['translation'][lang2]
+        lang1_sent = dataset[i][f'{lang1}_text']
+        lang2_sent = dataset[i][f'{lang2}_text']
         lang1_num_toks = dataset[i]['num_tokens'][lang1]
         lang2_num_toks = dataset[i]['num_tokens'][lang2]
         if (
@@ -340,11 +685,11 @@ def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
     tag_freqs = {}
     total_num_sentences = len(dataset)
     progress_counter = 0
-    for sentence in dataset['translation']:
+    for sentence in dataset[f'{src_lang}_text']:
         progress_counter += 1
         print('tagging sentences:\t'+str(progress_counter)+'/'+str(total_num_sentences), end='\r')
         #toks = hfst_tokenizer.tokenize(sentence[src_lang])
-        toks = word_tokenize(sentence[src_lang])
+        toks = word_tokenize(sentence)
         all_tokens.append(toks)
         total_tokens += len(toks)
         tags = []
@@ -379,6 +724,7 @@ def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
     sink.write('HFST Tokenization and Tagging ---------------------\n')
     sink.write('total number of tokens:\t'+str(total_tokens)+'\n')
     sink.write('total number of unrecognized tokens:\t'+str(total_unrecognized_tokens)+'\n')
+    sink.write('overall proportion of unrecognized tokens:\t'+str(float(total_unrecognized_tokens)/float(total_tokens))+'\n')
     tag_freqs = {k: v for k, v in sorted(tag_freqs.items(), key=lambda item: item[1])}
     sink.write('tag frequencies\n')
     for key in tag_freqs:
@@ -480,6 +826,17 @@ def main():
     #with open('morph_test_log.txt', 'w') as sink:
         #test_dataset = add_src_morph_tags(test_dataset, 'fi', sink)
     #return
+    #build_hfst_taggers(nllb_test)
+    #return
+
+    #ak_test = preproc_dataset([], 'en', 'ak')
+    #need to figure out situation with iso set 1 code for luo
+    test_lang_list = ['ak', 'am', 'ay', 'ba', 'fo', 'ga', 'gn', 'so', 'tt', 'tl', 'ti', 'zu']
+    for lang in test_lang_list:
+        ds = preproc_dataset([], 'en', lang)
+    return
+
+
     args1 = {
         'dataset_name_list': ['tatoeba', 'kde4'],
         'lang1': 'en',
