@@ -6,10 +6,14 @@ from transformers import T5Tokenizer
 import sys
 import subprocess
 from io import TextIOWrapper
+from googletrans import Translator
+import random
+import time
 
 import utils
 import hfst
 import json
+import logging
 
 hf_datasets_list = [
     ''
@@ -68,6 +72,36 @@ nllb_and_giellalt_low_resource_langs = [
     ('tir', 'Tigrinya'),
     ('zul-x-exp', 'Zulu')
 ]
+
+
+nllb_LR_good_giellalt_covg = [
+    ('bak', 'Bashkir'),
+    ('fao', 'Faroese'),
+    ('gle', 'Irish'),
+    ('som', 'Somali'),
+    ('tat', 'Tatar'),
+]
+
+nllb_LR_good_giellalt_covg_iso1 = ['ba', 'fo', 'ga', 'so', 'tt']
+
+madlad_and_giellalt_but_not_nllb_LR_langs = [
+                      ('chr', 'Cherokee'),
+                      ('cor', 'Cornish'),
+                      ('eus', 'Basque'),
+                      ('hil', 'Hiligaynon'),
+                      ('iku', 'Inuktitut'),
+                      ('kal', 'Kalaallisut'),
+                      ('kjh', 'Khakas'),
+                      ('koi', 'Komi-Permyak'),
+                      ('lav', 'Latvian'),
+                      ('mdf', 'Moksha'),
+                      ('oji', 'Ojibwa'),
+                      ('sme', 'Northern Sami'),
+                      ('tyv', 'Tuvinian'),
+                      ('udm', 'Udmurt'),
+                      ('xal', 'Kalmyk'),
+                      ]
+
 
 corpus_list = [
     'facebook/flores', 
@@ -130,20 +164,80 @@ chosen_langs_with_corpora = [
 
 #spanish and turkish failed to build hfst taggers properly
 
+#cache implementation from online that I don't think solves my problem
+def cached_detect_lang(text, translator):
+    if not hasattr(detect_lang, 'cache'):
+        detect_lang.cache = {}
+    if text in detect_lang.cache:
+        return detect_lang.cache[text]
+    
+    result = translator.detect(text).lang
+    detect_lang.cache[text] = result
+    return result
+
+#non-cached version, implementing re-trying and pausing for issues of rate limiting 
+def detect_lang(text, translator):
+    detection = None
+    while detection is None:
+        #using googletrans library
+        try:
+            detection = translator.detect(text)
+        #time delay to attempt to avoid rate limiting
+        except:
+            time.sleep(1)
+    result = detection.lang
+    return result
+
+def confirm_dataset_lang(
+        dataset,
+        lang, #iso1 code
+        num_of_samples=10,
+        confirmation_rate = 0.5
+):
+    if num_of_samples >= len(dataset):
+        return False
+        #num_of_samples = len(dataset) - 1
+    translator = Translator()
+    sample_nums = random.sample(range(0,len(dataset)-1), num_of_samples)
+    print(sample_nums)
+    samples = [str(dataset[f"{lang}_text"][num]) for num in sample_nums]
+    samples = [sent for sent in samples if sent != '']
+    num_of_samples = len(samples)
+    confirm_ct = 0
+    for num in sample_nums:
+
+        sent = str(dataset[f"{lang}_text"][num])
+        print(sent)
+        print(type(sent))
+        #time.sleep(1)
+        det_lang = detect_lang(sent, translator)
+        print(det_lang)
+        if det_lang == lang:
+            confirm_ct += 1
+    confirm_ratio = float(confirm_ct) / float(num_of_samples)
+    if confirm_ratio < confirmation_rate:
+        return False
+    else:
+        return True
+
+    
 
 
+
+#NOT in use
 def dict_from_json(filename):
     with open(filename) as source:
         data = json.load(source)
     return data
 
-
+#in use, likely needs to be modified
 def build_hfst_taggers(lang_code_list):
     codes, names = zip(*lang_code_list)
     for code in codes:
         subprocess.run(["./build_hfst_tagger.sh", code])
     return
 
+#NOT in use
 def check_for_tokenizer(lang_code_list):
     codes, names = zip(*lang_code_list)
     for code in codes:
@@ -153,7 +247,7 @@ def check_for_tokenizer(lang_code_list):
 
 
 
-
+#in use
 def load_and_format_flores_ds(
         dataset_path,
         lang1, #expected in 2letter iso format
@@ -188,7 +282,7 @@ def load_and_format_flores_ds(
     splits_combined = concatenate_datasets(all_splits)
     return splits_combined
 
-
+#in use
 def load_and_format_helsinki_opus_100_ds(
     dataset_path,
     lang1,
@@ -209,21 +303,25 @@ def load_and_format_helsinki_opus_100_ds(
     all_splits = []
     for split in dataset_dict:
         this_split = dataset_dict[split]
-        print(f"this split: {this_split}")
+        #print(f"this split: {this_split}")
         lang1_text = [sent[lang1] for sent in this_split['translation']]
-        print(f"lang1 text [0]: {lang1_text[0]}")
+        #print(f"lang1 text [0]: {lang1_text[0]}")
         lang2_text = [sent[lang2] for sent in this_split['translation']]
-        print(f"lang2 text [0]: {lang2_text[0]}")
+        #print(f"lang2 text [0]: {lang2_text[0]}")
         this_split = this_split.add_column(f'{lang1}_text', lang1_text)
         this_split = this_split.add_column(f'{lang2}_text', lang2_text)
-        this_split = this_split.remove_columns(['translation', 'id'])
-        print(f"this split: {this_split}")
+        if 'translation' in this_split.features:
+            this_split = this_split.remove_columns(['translation'])
+        if 'id' in this_split.features:
+            this_split = this_split.remove_columns(['id'])
+
+        #print(f"this split: {this_split}")
         all_splits.append(this_split)
     splits_combined = concatenate_datasets(all_splits)
     return splits_combined
 
 
-
+#in use
 def load_and_format_helsinki_tatoeba_ds(
     dataset_path,
     lang1,
@@ -282,7 +380,7 @@ def load_and_format_helsinki_tatoeba_ds(
 
     
 
-
+#NOT in use
 def manually_check_dataset_validity(
         lang1,
         lang2,
@@ -290,6 +388,7 @@ def manually_check_dataset_validity(
 ):
     return
 
+#in use, probably needs serious modifications
 def load_datasets(
         dataset_name_list: list[str],
         lang1: str,
@@ -309,7 +408,33 @@ def load_datasets(
     print('Loading datasets...')
     dataset_list = []
     
-    #flores
+    ds_loading_list = [
+        ('facebook/flores', load_and_format_flores_ds),
+        ('Helsinki-NLP/opus-100', load_and_format_helsinki_opus_100_ds),
+        ('Helsinki-NLP/tatoeba', load_and_format_helsinki_tatoeba_ds),
+        ('Helsinki-NLP/qed_amara', load_and_format_flores_ds),
+    ]
+
+
+    for ds_name, ds_load_fct in ds_loading_list:
+        this_dataset = None
+        try:
+            this_dataset = ds_load_fct(ds_name, lang1=lang1, lang2=lang2)
+        except:
+            sink.write(f"unable to load dataset {ds_name} for pair {lang1} {lang2}\n\n")
+        if this_dataset is not None:
+            if confirm_dataset_lang(this_dataset, lang1) and confirm_dataset_lang(this_dataset, lang2):
+                sink.write(f"dataset language ID confirmed for {ds_name} for pair {lang1} {lang2}\n\n")
+                this_dataset = create_tokens_per_sentence_feature(this_dataset, lang1, lang2)
+                this_dataset = create_content_feature(this_dataset, lang1, lang2)
+                dataset_log_title = ds_name+'_'+lang1+'_'+lang2
+                log_dataset_info(dataset_log_title, this_dataset, lang1, lang2, sink)
+                dataset_list.append(this_dataset)
+            else:
+                sink.write(f"Dataset language ID not correct for {ds_name} for pair {lang1} {lang2}\n\n")
+        
+
+    """
     dataset_name = 'facebook/flores'
     try:
         this_dataset = load_and_format_flores_ds(dataset_name, lang1=lang1, lang2=lang2)
@@ -356,10 +481,12 @@ def load_datasets(
         dataset_list.append(this_dataset)
     except:
         sink.write(f"unable to load dataset {dataset_name} for pair {lang1} {lang2}\n\n")
+    """
         
     print('Datasets loaded.')
     return dataset_list
 
+#NOT in use
 def legacy_load_datasets(
         dataset_name_list: list[str],
         lang1: str,
@@ -394,6 +521,7 @@ def legacy_load_datasets(
     print('Datasets loaded.')
     return dataset_list
 
+#in use
 def create_tokens_per_sentence_feature(
         dataset: Dataset,
         lang1: str,
@@ -418,6 +546,7 @@ def create_tokens_per_sentence_feature(
     dataset = dataset.add_column("num_tokens", num_tok_column)
     return dataset
 
+#in use
 def create_content_feature(
         dataset: Dataset,
         lang1: str,
@@ -438,7 +567,7 @@ def create_content_feature(
     return dataset
 
 
-
+#in use
 def log_dataset_info(
         dataset_title: str,
         dataset: Dataset,
@@ -466,7 +595,7 @@ def log_dataset_info(
     sink.write('\n')
     return
     
-
+#in use
 def combine_datasets(
         dataset_list: list[Dataset],
         lang1: str,
@@ -488,6 +617,7 @@ def combine_datasets(
     print('Datasets combined.')
     return combined_dataset
 
+#in use
 def check_for_url(
         sent: str
         ) -> bool:
@@ -500,6 +630,7 @@ def check_for_url(
             return True
     return False
 
+#in use
 def check_for_length(
         num_toks: int,
         min_len: int = 5,
@@ -512,6 +643,7 @@ def check_for_length(
         return True
     return False
 
+#in use
 def clean_dataset(dataset: Dataset,
                   lang1: str,
                   lang2: str,
@@ -545,6 +677,7 @@ def clean_dataset(dataset: Dataset,
     print('Dataset cleaned.')
     return dataset
 
+#in use
 def my_dedupe_dataset(
                 dataset: Dataset,
                 lang1: str,
@@ -564,6 +697,7 @@ def my_dedupe_dataset(
     print('Dataset deduplicated.')
     return dataset
 
+#NOT in use!!!
 def stitch_subword_tokens(
         toks: list[str]
         ):
@@ -599,7 +733,7 @@ def stitch_subword_tokens(
     return surface_form_toks
 
 
-
+#NOT in use!!!
 def add_morph_tags_to_sentence(
         toks: list[str],
         morph_dict: dict,
@@ -623,31 +757,8 @@ def add_morph_tags_to_sentence(
         tags.append(tag)
     return tags
     
-"""
-def add_morph_tags_to_dataset(
-        dataset: Dataset,
-        lang1: str,
-        lang2: str,
-        sink: TextIOWrapper,
-        tokenizer: T5Tokenizer
-        ) -> Dataset:
 
-    #takes in a parallel text dataset
-    #uses morphological tag dictionaries to create lists of tags for each sentence
-    
-
-    lang1_morph_dict = load_morph_dict(lang1)
-    lang2_morph_dict = load_morph_dict(lang2)
-    morph_tags = []
-    for pair in dataset['translation']:
-        lang1_toks = stitch_subword_tokens(tokenizer.tokenize(pair[lang1]))
-        lang2_toks = stitch_subword_tokens(tokenizer.tokenize(pair[lang2]))
-        lang1_tags = add_morph_tags_to_sentence(lang1_toks, lang1_morph_dict)
-        lang2_tags = add_morph_tags_to_sentence(lang2_toks, lang2_morph_dict)
-        this_morph_tag = {lang1: lang1_tags, lang2: lang2_tags}
-        morph_tags.append(this_morph_tag)
-    dataset = dataset.add_column('morph tags', morph_tags)
-"""
+#NOT in use, to be deprecated???? or saved?????
 def load_hfst_tokenizer(src_lang):
     print('Loading hfst tokenizer...')
     giellalt_code = utils.get_giellalt_code(src_lang)
@@ -661,6 +772,7 @@ def load_hfst_tokenizer(src_lang):
     print('hfst tokenizer loaded')
     return tokenizer
 
+#in use
 def load_hfst_tagger(src_lang):
     print('Loading hfst tagger...')
     giellalt_code = utils.get_giellalt_code(src_lang)
@@ -674,7 +786,7 @@ def load_hfst_tagger(src_lang):
     print('hfst tagger loaded')
     return tagger
 
-
+#in use
 def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
     #hfst_tokenizer = load_hfst_tokenizer(src_lang)
     hfst_tagger = load_hfst_tagger(src_lang)
@@ -724,13 +836,16 @@ def add_src_morph_tags(dataset: Dataset, src_lang, sink: TextIOWrapper):
     sink.write('HFST Tokenization and Tagging ---------------------\n')
     sink.write('total number of tokens:\t'+str(total_tokens)+'\n')
     sink.write('total number of unrecognized tokens:\t'+str(total_unrecognized_tokens)+'\n')
-    sink.write('overall proportion of unrecognized tokens:\t'+str(float(total_unrecognized_tokens)/float(total_tokens))+'\n')
+    tokenizer_covg: float = 1.0 - float(total_unrecognized_tokens)/float(total_tokens)
+    #sink.write('overall coverage of recognized tokens:\t'+str(1.0 - float(total_unrecognized_tokens)/float(total_tokens))+'\n')
+    sink.write(f'overall coverage of recognized tokens:\t{tokenizer_covg:.2f}\n')
     tag_freqs = {k: v for k, v in sorted(tag_freqs.items(), key=lambda item: item[1])}
     sink.write('tag frequencies\n')
     for key in tag_freqs:
         sink.write(key+':\t'+str(tag_freqs[key])+'\n')
     return dataset
 
+#in use
 def split_dataset(
         dataset: Dataset,
         lang1: str,
@@ -768,6 +883,7 @@ def split_dataset(
     print('Dataset split.')
     return three_way_split_ds
 
+#in use
 def remove_extra_columns(
         dataset: Dataset
 ) -> Dataset:
@@ -777,7 +893,7 @@ def remove_extra_columns(
     dataset = dataset.remove_columns(['num_tokens', 'content'])
     return dataset
     
-
+#in use
 def save_dataset_dict(
         dataset_dict: DatasetDict,
         lang1: str,
@@ -793,6 +909,7 @@ def save_dataset_dict(
     print('Dataset Dict saved locally:\t' + ds_filename)
     return
 
+#in use
 def preproc_dataset(
         dataset_name_list: list[str],
         lang1: str,
@@ -808,17 +925,23 @@ def preproc_dataset(
         sink.write('language 2:\t'+lang2+'\n')
         sink.write('datasets:\t' + ' '.join([db for db in dataset_name_list])+'\n\n')
         dataset_list = load_datasets(dataset_name_list, lang1, lang2, sink)
-        dataset = combine_datasets(dataset_list, lang1, lang2, sink)
-        dataset = clean_dataset(dataset, lang1, lang2, sink)
-        dataset = my_dedupe_dataset(dataset,lang1, lang2, sink)
-        dataset = add_src_morph_tags(dataset, lang2, sink)
-        dataset = remove_extra_columns(dataset)
-        split_ds_dict = split_dataset(dataset, lang1, lang2, sink)
-        save_dataset_dict(split_ds_dict, lang1, lang2)
+        if len(dataset_list)>0:
+            dataset = combine_datasets(dataset_list, lang1, lang2, sink)
+            dataset = clean_dataset(dataset, lang1, lang2, sink)
+            dataset = my_dedupe_dataset(dataset,lang1, lang2, sink)
+            dataset = add_src_morph_tags(dataset, lang2, sink)
+            dataset = remove_extra_columns(dataset)
+            split_ds_dict = split_dataset(dataset, lang1, lang2, sink)
+            save_dataset_dict(split_ds_dict, lang1, lang2)
+        else: 
+            split_ds_dict = None
     return split_ds_dict
 
 
 def main():
+
+
+
     #split_ds_dict = preproc_dataset(['tatoeba', 'kde4'], 'en', 'se')
     #save_dataset_dict(split_ds_dict, 'en', 'se')
 
@@ -828,6 +951,34 @@ def main():
     #return
     #build_hfst_taggers(nllb_test)
     #return
+
+
+    #testing LR langs for madlad
+    #codes, names = zip(*madlad_and_giellalt_but_not_nllb_LR_langs)
+    #build_hfst_taggers(madlad_and_giellalt_but_not_nllb_LR_langs)
+    #madlad_list = ['kw', 'eu', 'iu', 'kl', 'kv', 'lv', 'oj', 'se']
+    #crashes on kl
+    #kv dataset too small, need to find other corpora
+    #build_hfst_taggers([('sme', 'Northern Sami')])
+
+    #madlad_list = ['lv', 'oj', 'se']
+    madlad_list = ['se']
+    #for lang in madlad_list:
+        #ds = preproc_dataset([], 'en', lang)
+    #return
+    madlad_high_hfst_covg = ['kw', 'kl', 'kv', 'lv',  'se', 'kjh', 'mdf', 'udm']
+
+    madlad_iso3_that_dont_have_iso1 = ['chr', 'hil', 'kjh', 'mdf', 'tyv', 'udm', 'xal']
+    #cherokee and khj also break bc ds is too small
+    #madlad_iso3_that_dont_have_iso1 = ['udm', 'xal']
+    nllb_LR_good_giellalt_covg_iso1_unfinished_lang_detect = ['so', 'tt', 'zu']
+    #this means I need a fct that gets giellalt codes for ones that dont have iso1?
+    #for lang in madlad_list:
+        #ds = preproc_dataset([], 'en', lang)
+    for lang in nllb_LR_good_giellalt_covg_iso1_unfinished_lang_detect:
+        ds = preproc_dataset([], 'en', lang)
+    return
+
 
     #ak_test = preproc_dataset([], 'en', 'ak')
     #need to figure out situation with iso set 1 code for luo

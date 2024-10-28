@@ -1,38 +1,56 @@
 giellalt code,ISO Set 1,ISO Set 3,NLLB Code,Language,Language Family,,MADLAD,NLLB-200,T5,mbart-large-50-many-to-many-mmt
-aka,ak,aka,aka_Latn,Akan,,,,y,,
-sqi,sq,sqi,,Albanian,,,y,y,,
-amh,am,amh,amh_Ethi,Amharic,,,y,y,,
-ara,ar,ara,arb_Arab,Arabic,,,y,y,,y
-aym,ay,aym,ayr_Latn,Aymara,,,y,y,,
-bak,ba,bak,bak_Cyrl,Bashkir,,,y,y,,
-bul,bg,bul,bul_Cyrl,Bulgarian,,,y,y,,
-ces,cs,ces,ces_Latn,Czech,,,y,y,,y
-eng,en,eng,eng_Latn,English,,,y,y,,y
-epo,eo,epo,ep_Latn,Esperanto,,,y,y,,
-est-x-plamk,et,est,est_Latn,Estonian (plamk),,,y,y,,y
-est-x-utee,et,est,est_Latn,Estonian (utee),,,y,y,,y
-fao,fo,fao,fao_Latn,Faroese,,,y,y,,
-fin,fi,fin,fin_Latn,Finnish,,,y,y,,y
-deu,de,deu,deu_Latn,German,,,y,y,,y
-grn,gn,grn,grn_Latn,Guarani,,,y,y,,
-khk,mn,khk,,Halh Mongolian,,,y,y,,y
-hin,hi,hin,hin_Deva,Hindi,,,y,y,,y
-hun,hu,hun,hun_Latn,Hungarian,,,y,y,,
-gle,ga,gle,gle_Latn,Irish,,,y,y,,
-lit,lt,lit,lit_Latn,Lithuanian,,,y,y,,y
-luo,,luo,luo_Latn,Luo (Kenya and Tanzania),,,,y,,
-nob,nb,nob,nob_Latn,Norwegian Bokmål,,,"???? just norwegian in general doesnt specify nynorsk or bokmal, must investigate",y,,
-nno,nn,nno,nno_Latn,Norwegian Nynorsk,,,?????,y,,
-nno-x-ext-apertium,nn,nno,nno_Latn,Norwegian Nynorsk (Apertium),,,,y,,
-ron,ro,ron,ron_Latn,Romanian,,,y,y,,y
-rus,ru,rus,rus_Cyrl,Russian,,,y,y,,y
-som,so,som,som_Latn,Somali,,,y,y,,
-spa-x-ext-apertium,es,spa,spa_Latn,Spanish,,,y,y,,y
-swe,sv,swe,swe_Latn,Swedish,,,y,y,,y
-tgl,tl,tgl,tgl_Latn,Tagalog,,,,y,,y
-tat,tt,tat,tat_Latn,Tatar,,,y,y,,
-tel,te,tel,tel_Telu,Telugu,,,y,y,,y
-tha,th,tha,tha_Thai,Thai,,,y,y,,y
-tir,ti,tir,tir_Ethi,Tigrinya,,,y,y,,
-tur-x-ext-trmorph,tr,tur,tur_Latn,Turkish,,,y,y,,y
-zul-x-exp,zu,zul,zul_Latn,Zulu,,,y,y,,
+aka,ak,aka,aka_Latn,Akan,atlantic-congo,,,y,,
+sqi,sq,sqi,,Albanian,albanian,,y,y,,
+amh,am,amh,amh_Ethi,Amharic,west semitic,,y,y,,
+ara,ar,ara,arb_Arab,Arabic,west semitic,,y,y,,y
+aym,am,aym,ayr_Latn,Aymara,aymaran,,y,y,,
+bak,ba,bak,bak_Cyrl,Bashkir,turkic,,y,y,,
+bul,bg,bul,bul_Cyrl,Bulgarian,south slavic,,y,y,,
+ces,cs,ces,ces_Latn,Czech,west slavic,,y,y,,y
+eng,en,eng,eng_Latn,English,w germanic,,y,y,,y
+epo,eo,epo,ep_Latn,Esperanto,constructed,,y,y,,
+est-x-plamk,et,est,est_Latn,Estonian (plamk),uralic,,y,y,,y
+est-x-utee,et,est,est_Latn,Estonian (utee),uralic,,y,y,,y
+fao,fo,fao,fao_Latn,Faroese,n germanic,,y,y,,
+fin,fi,fin,fin_Latn,Finnish,uralic,,y,y,,y
+deu,de,deu,deu_Latn,German,w germanic,,y,y,,y
+grn,gn,grn,grn_Latn,Guarani,tupian,,y,y,,
+khk,mn,khk,,Halh Mongolian,mongolic,,y,y,,y
+hin,hi,hin,hin_Deva,Hindi,c indo-aryan,,y,y,,y
+hun,hu,hun,hun_Latn,Hungarian,uralic,,y,y,,
+gle,ga,gle,gle_Latn,Irish,celtic,,y,y,,
+lit,lt,lit,lit_Latn,Lithuanian,baltic,,y,y,,y
+luo,,luo,luo_Latn,Luo (Kenya and Tanzania),nilotic,,,y,,
+nob,nb,nob,nob_Latn,Norwegian Bokmål,n germanic,,"???? just norwegian in general doesnt specify nynorsk or bokmal, must investigate",y,,
+nno,nn,nno,nno_Latn,Norwegian Nynorsk,n germanic,,?????,y,,
+nno-x-ext-apertium,nn,nno,nno_Latn,Norwegian Nynorsk (Apertium),n germanic,,,y,,
+ron,ro,ron,ron_Latn,Romanian,romance,,y,y,,y
+rus,ru,rus,rus_Cyrl,Russian,east slavic,,y,y,,y
+som,so,som,som_Latn,Somali,cushitic,,y,y,,
+spa-x-ext-apertium,es,spa,spa_Latn,Spanish,romance,,y,y,,y
+swe,sv,swe,swe_Latn,Swedish,n germanic,,y,y,,y
+tgl,tl,tgl,tgl_Latn,Tagalog,austronesian,,,y,,y
+tat,tt,tat,tat_Latn,Tatar,turkic,,y,y,,
+tel,te,tel,tel_Telu,Telugu,dravidian,,y,y,,y
+tha,th,tha,tha_Thai,Thai,tai kadai,,y,y,,y
+tir,ti,tir,tir_Ethi,Tigrinya,west semitic,,y,y,,
+tur-x-ext-trmorph,tr,tur,tur_Latn,Turkish,turkic,,y,y,,y
+zul-x-exp,zu,zul,zul_Latn,Zulu,bantu,,y,y,,
+,,,,,,,,,,
+eus,eu,eus,,Basque,,,y,,,
+chr,,chr,,Cherokee,,,y,,,
+cor,kw,cor,,Cornish,,,y,,,
+myv,,myv,,Erzya,,,y,,,
+hil,,hil,,Hiligaynon,,,y,,,
+iku,iu,iku,,Inuktitut,,,y,,,
+kal,kl,kal,,Kalaallisut,,,y,,,
+xal,,xal,,Kalmyk,,,y,,,
+kjh,,kjh,,Khakas,,,y,,,
+tlh,,tlh,,Klingon,,,y,,,
+koi,kv,koi,,Komi-Permyak,,,y,,,
+lav,lv,lav,,Latvian,,,y,,,y
+mdf,,mdf,,Moksha,,,y,,,
+sme,se,sme,,Northern Sami,,,y,,,
+oji,oj,oji,,Ojibwa,,,y,,,
+tyv,,tyv,,Tuvinian,,,y,,,
+udm,,udm,,Udmurt,,,y,,,

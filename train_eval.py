@@ -4,7 +4,7 @@
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, AdamW, NllbTokenizer, get_scheduler, Adafactor
 from datasets import Dataset, DatasetDict, load_from_disk, load_metric
 from typing import Callable
-from torch import cuda, device, set_default_device, Generator, no_grad, bfloat16, float16
+from torch import cuda, Generator, no_grad, bfloat16, float16
 import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
@@ -15,77 +15,18 @@ from peft import get_peft_model, LoraConfig, TaskType
 from tqdm.auto import tqdm
 from morph_tokenizer import create_morph_tokenizer
 
-from morph_model import MorphM2M100, MorphModelDataCollator, ForwardOnlyTrainer
+from morph_model import MorphM2M100, MorphModelDataCollator
 
 import evaluate
+import logging
 
 
-import sys
-import trace
-import psutil
-import resource
-import hunter
 #import function_trace
 #some stuff that will be used everywhere perhaps
 #model_checkpoint = 'jbochi/madlad400-3b-mt'
 
 #trying gpu version override
 HSA_OVERRIDE_GFX_VERSION=1030
-
-
-
-#deprecated
-def create_preprocess_function(
-        tokenizer,
-        model_scheme: str, 
-        src_lang: str,
-        trg_lang: str,
-        max_input_length: int = 25,
-        max_target_length: int = 25
-    ) -> Callable:
-    """
-    
-    """
-    def preprocess_function(
-            dataset: Dataset
-        ):
-        """
-
-        """
-        prefix = ''
-        if model_scheme == 'MADLAD':
-            prefix = '<2'+trg_lang+'> '
-        if model_scheme == 'NLLB':
-            prefix = utils.get_nllb_code(trg_lang) + ' ' #this is wrong I need prefix on the trg lang for nllb ugh wait maybe this is right
-        inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
-        targets = [(ex[trg_lang]) for ex in dataset['translation']]
-        model_inputs = tokenizer(inputs, max_length=max_input_length, truncation=True)
-        #does the t5tokenizer do this?
-        if model_scheme == 'MADLAD':
-            with tokenizer.as_target_tokenizer():
-                labels = tokenizer(targets, max_length=max_target_length, truncation=True)
-        if model_scheme == 'NLLB':
-            labels = tokenizer(targets, max_length=max_target_length, truncation=True)
-        model_inputs['labels'] = labels['input_ids']
-        return model_inputs
-    return preprocess_function
-
-
-
-#deprecated
-def load_tokenized_inputs(
-    tokenizer: T5Tokenizer,
-    src_lang: str,
-    trg_lang: str,  
-    ):
-    """
-    
-    """
-    preprocess_function = create_preprocess_function(tokenizer, 'NLLB', src_lang, trg_lang)
-    datasetdict = load_from_disk(src_lang+'-'+trg_lang+'-combined.hf')
-    datasetdict.generator=Generator('cuda')
-    tokenized_datasets = datasetdict.map(preprocess_function, batched=True)
-    return tokenized_datasets
 
 
 #in use
@@ -150,168 +91,6 @@ def compute_metrics(
         #'accuracy': accuracy['accuracy']
     }
     return results
-
-
-"""
-    result = metric.compute(predictions=decoded_preds, references=decoded_labels)
-    result = {"bleu": result["score"]}
-
-    prediction_lens = [np.count_nonzero(pred != tokenizer.pad_token_id) for pred in preds]
-    result["gen_len"] = np.mean(prediction_lens)
-    result = {k: round(v, 4) for k, v in result.items()}
-    return result
-"""
-
-#deprecated
-def finetune_and_eval(
-        model_checkpoint,
-        model_scheme: str,
-        src_lang: str,
-        trg_lang: str
-    ) -> None:
-    """
-    
-    """
-    if cuda.is_available():
-        this_device="auto"
-        use_fp16=True
-    else:
-        this_device="cpu"
-        use_fp16=False
-    #with device('cpu'):
-    if True:
-        #peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1, target_modules='xxxxxxx')
-        peft_config = LoraConfig(task_type=TaskType.SEQ_2_SEQ_LM, target_modules='all-linear')
-
-        if model_scheme == "MADLAD":
-            model = T5ForConditionalGeneration.from_pretrained(model_checkpoint, device_map="auto", torch_dtype=float16)
-            model = get_peft_model(model, peft_config)
-            tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-            
-        if model_scheme == "NLLB":
-            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, device_map="auto")#, torch_dtype=float16)
-            #model = get_peft_model(model, peft_config)
-            print(next(model.parameters()).is_cuda)
-            tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
-        if model_scheme == "Morph":
-            config = M2M100Config.from_pretrained('facebook/nllb-200-distilled-600M')
-            model = MorphM2M100(config)
-            tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang=utils.get_nllb_code(src_lang))
-        print('model loaded')
-        #batch_size = 16
-        batch_size = 1
-        args = Seq2SeqTrainingArguments(
-            f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}",
-            evaluation_strategy = "epoch",
-            learning_rate=2e-5,
-            per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=batch_size,
-            #gradient_accumulation_steps=4,
-            weight_decay=0.01,
-            save_total_limit=3,
-            num_train_epochs=1,
-            predict_with_generate=True,
-            fp16=use_fp16,
-            push_to_hub=False
-        )#kind of copied from whole cloth, need to understand what this means
-        args = Seq2SeqTrainingArguments(f"{model_checkpoint}-finetuned-{src_lang}-to-{trg_lang}")
-        tokenized_datasets = load_tokenized_inputs(tokenizer, src_lang, trg_lang)
-        tokenized_datasets.generator = Generator('cuda')
-        data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
-        trainer = Seq2SeqTrainer(
-            model,
-            args,
-            train_dataset=tokenized_datasets['train'].train_test_split(test_size=0.00005)['test'],
-            eval_dataset=tokenized_datasets['test'].train_test_split(test_size=0.005)['test'], #or should this be dev? I never know ugh
-            data_collator = data_collator,
-            tokenizer=tokenizer,
-            compute_metrics=compute_metrics
-        )
-
-        #trainer.evaluate()
-        print('about to train')
-        #tracer = trace.Trace()
-        #tracer.run("trainer.train()")
-        """
-        hunter.trace(
-            #stdlib=False,
-            #clear_env_var=True,
-            #calls=10
-            hunter.Q(
-                depth_lt=5,
-                kind='call',
-                stdlib=False,
-                #function_startswith=('train')
-                #function='train'
-                #module='Seq2SeqTrainer',
-                #module='transformers.Seq2SeqTrainer'
-            ) &
-            ~hunter.Q(
-                function_startswith=(
-                                     '_hp_search_setup',
-                                     'n_gpu',
-                                     'find_executable',
-                                     'free_memory',
-                                     'debug',
-                                     'world_size',
-                                     'has_length',
-                                     '__len__',
-                                     'num_examples',
-                                     'is_sagemaker_mp',
-                                     'create_optimizer',
-                                     '_wrap',
-                                     'get_model',
-                                     'is_',
-                                     'zero_grad',
-                                     'prepare',
-                                     'get_train',
-                                     '<genexpr>',
-                                     'parameters'
-                                     )
-                #function='train',
-                #function='start'
-            )
-            #module='trainer'
-        )
-        """
-        trainer.train()
-    return
-
-
-
-#deprecated
-def eval(
-        model_checkpoint,
-        src_lang: str,
-        trg_lang: str
-    ) -> None:
-    """
-    
-    """
-    try:
-        #hacky, rewrite
-        test_dataset = load_from_disk(src_lang+'-'+trg_lang+'-combined.hf')
-    except:
-        test_dataset = load_from_disk(trg_lang+'-'+src_lang+'-combined.hf')
-    test_dict = {src_lang:[], trg_lang:[]}
-    for pair in test_dataset['test']:
-        test_dict[src_lang].append('<2'+trg_lang+'> ' + pair['translation'][src_lang])
-        test_dict[trg_lang].append(pair['translation'][trg_lang])
-    formatted_ds = Dataset.from_dict(test_dict)
-
-    tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-    #tokenized_datasets = load_tokenized_inputs(tokenizer, src_lang, trg_lang)
-    task_evaluator = evaluator("translation")
-    eval_results = task_evaluator.compute(
-        model_or_pipeline=model_checkpoint,
-        data=formatted_ds.train_test_split(test_size=0.02)['test'],
-        input_column=src_lang,
-        label_column=trg_lang,
-        tokenizer=tokenizer
-    )
-    print(eval_results)
-    return
-
 
 #in use
 def create_model():
@@ -378,8 +157,8 @@ def tokenize_dataset(
     for split in dataset_dict:
         print(f"split: {split}")
         dataset = dataset_dict[split]
-        inputs = [(ex[src_lang]) for ex in dataset['translation']]
-        targets = [(ex[trg_lang]) for ex in dataset['translation']]
+        inputs = [ex for ex in dataset[f"{src_lang}_text"]]
+        targets = [ex for ex in dataset[f"{src_lang}_text"]]
         tags_data = [ex for ex in dataset[f'{src_lang} tags']]
         tags_data = [' '.join(tag for tag in tags) for tags in tags_data]
         tags_data = [sent.replace('+', '') for sent in tags_data]
@@ -391,130 +170,6 @@ def tokenize_dataset(
     tokenized_dataset_dict = DatasetDict(tokenized_dict)
     print(f"final processed thing: {tokenized_dataset_dict}")
     return tokenized_dataset_dict
-
-
-#in use, to be deprecated
-def preproc_data(text_tokenizer):
-    src_lang = 'fi'
-    trg_lang = 'en'
-    tag_tokenizer = create_morph_tokenizer()
-    max_length = 250
-    max_input_length = max_length
-    max_tag_length = max_length
-    max_target_length = max_length
-    dataset = load_from_disk('en-fi-combined.hf')
-    #dataset= dataset['train'].select(range(1))
-    dataset= dataset['train'].train_test_split(test_size=0.0005)['test']
-
-    prefix = utils.get_nllb_code(trg_lang) + ' ' #this is wrong I need prefix on the trg lang for nllb ugh wait maybe this is right
-    #inputs = [(prefix + ex[src_lang]) for ex in dataset['translation']]
-    inputs = [(ex[src_lang]) for ex in dataset['translation']]
-    targets = [(ex[trg_lang]) for ex in dataset['translation']]
-    print(f"raw inputs: {[sent for sent in inputs]}")
-    print(f"raw targets: {[sent for sent in targets]}")
-    
-
-    tags_data = [ex for ex in dataset['fi tags']]
-    tags_data = [' '.join(tag for tag in tags) for tags in tags_data]
-    tags_data = [sent.replace('+', '') for sent in tags_data]
-    #print(tags_data[0])
-    #print(tags_data[1])
-    #trying out not padding here bc the data collator will pad
-    #model_inputs = text_tokenizer(inputs, max_length=max_input_length, padding=True, truncation=True, return_tensors='pt')
-    #labels = text_tokenizer(targets, max_length=max_target_length, padding=True, truncation=True, return_tensors='pt')
-    print(f"inputs: {inputs}")
-    print(f"targets: {targets}")
-    print(f"max input length: {max_input_length}")
-    model_inputs = text_tokenizer(inputs, text_target=targets, max_length=max_input_length, padding=False, truncation=True)
-    #with text_tokenizer.as_target_tokenizer():
-    #    labels = text_tokenizer(targets, max_length=max_target_length, padding=False, truncation=True)
-    model_tag_inputs = [tag_tokenizer.encode(tags).ids[:max_tag_length] for tags in tags_data]
-    
-
-    #testing effect of snt ln on memory
-    """
-    data_trunc_test_len = 1000
-    model_inputs['input_ids'] = [ex[:data_trunc_test_len] for ex in model_inputs['input_ids']]
-    labels['input_ids'] = [ex[:data_trunc_test_len] for ex in labels['input_ids']]
-    model_tag_inputs = [ex[:data_trunc_test_len] for ex in model_tag_inputs]
-    #model_inputs['input_ids'] = [ex for ex in model_inputs['input_ids']]
-    #labels['input_ids'] = [ex for ex in labels['input_ids']]
-    #model_tag_inputs = [ex for ex in model_tag_inputs]
-    """
-    
-    #model_tag_inputs = [enc + [0] * (max_input_length - len(enc)) if len(enc) < max_input_length else enc[:max_input_length] for enc in model_tag_inputs]
-    #model_tag_inputs = torch.tensor(model_tag_inputs)
-    #model_inputs['labels'] = labels['input_ids']
-    model_inputs['tags'] = model_tag_inputs
-    print(f"model inputs dict: {model_inputs}")
-    model_inputs = Dataset.from_dict(model_inputs)
-    print(f"model inputs dataset: {model_inputs}")
-    return model_inputs
-
-#deprecated
-def create_dataloaders():
-    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
-    #text_tokenizer = M2M100Tokenizer.from_pretrained(initial_checkpoint)
-    #tag_tokenizer = create_morph_tokenizer()
-    #dataset = load_from_disk('en-fi-combined.hf')
-    data = preproc_data()
-    dataloader = DataLoader(data, batch_size=1, shuffle=False)
-    return dataloader
-
-#deprecated
-def morph_custom_train(
-        model: MorphM2M100,
-        train_dataloader,
-        eval_dataloader,
-        num_epochs,
-        learning_rate=5e-5
-    ):
-
-    #ensure correct device
-    device = torch.device("cuda") if cuda.is_available() else torch.device("cpu")
-    model.to(device)
-
-    #optimizer, scheduler, progress bar
-    optimizer=AdamW(model.parameters(), lr=learning_rate)
-    num_training_steps = num_epochs * len(train_dataloader)
-    lr_scheduler = get_scheduler('linear', optimizer=optimizer, num_warmup_steps=0, num_training_steps=num_training_steps)
-    progress_bar = tqdm(range(num_training_steps))
-
-    print('training...')
-    for epoch in range(num_epochs):
-        #train
-        model.train()
-        total_training_loss = 0
-        for batch in train_dataloader:
-            lang_input_ids = batch['lang_input_ids'].to(device)
-            morph_input_ids = batch['morph_input_ids'].to(device)
-            labels = batch['labels'].to(device)
-            outputs = model(lang_input_ids=lang_input_ids, morph_input_ids=morph_input_ids, labels=labels)
-            loss = outputs.loss
-            total_training_loss += loss.item()
-            loss.backward()
-            clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-            progress_bar.update(1)
-        avg_training_loss = total_training_loss / len(train_dataloader)
-        print(f"Epoch {epoch+1} - Avg Training Loss: {avg_training_loss}")
-        #eval
-        model.eval()
-        total_evaluation_loss = 0
-        for batch in eval_dataloader:
-            with no_grad():
-                lang_input_ids = batch['lang_input_ids'].to(device)
-                morph_input_ids = batch['morph_input_ids'].to(device)
-                labels = batch['labels'].to(device)
-                outputs = model(lang_input_ids=lang_input_ids, morph_input_ids=morph_input_ids, labels=labels)
-                loss = outputs.loss
-                total_evaluation_loss += loss.item()
-        avg_evaluation_loss = total_evaluation_loss / len(eval_dataloader)
-        print(f"Epoch {epoch+1} - Avg Evaluation Loss: {avg_evaluation_loss}")
-        #need to like save the model somehow
-    return
 
 #in use
 def gen_training_args():
@@ -539,9 +194,19 @@ def gen_training_args():
     return training_args
 
 #in use
-def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eval=False):
-    src_lang = 'fi'
-    trg_lang = 'en'
+def morph_train_with_trainer(
+        model,
+        data,
+        text_tokenizer,
+        src_lang,
+        trg_lang,
+        to_train=False,
+        to_eval=False,
+        proportion_of_train_dataset=1.0,
+        proportion_of_test_dataset=1.0
+        ):
+    #src_lang = 'fi'
+    #trg_lang = 'en'
     trg_lang_nllb_code = utils.get_nllb_code(trg_lang)
     trg_lang_nllb_id = text_tokenizer.convert_tokens_to_ids(trg_lang_nllb_code)
     #text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang))
@@ -561,13 +226,23 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
         lr=5e-5
     )
 
+    if proportion_of_train_dataset>=1.0:
+        train_dataset = data['train']
+    else:
+        train_dataset = data['train'].train_test_split(test_size=proportion_of_train_dataset)['test']
+    if proportion_of_test_dataset>=1.0:
+        test_dataset = data['test']
+    else:
+        test_dataset = data['test'].train_test_split(test_size=proportion_of_test_dataset)['test']
+
+
     #trainer = MorphSeq2SeqTrainer(
     trainer = Seq2SeqTrainer(
     #trainer = ForwardOnlyTrainer(
         model=model,
         args=training_args,
-        train_dataset=data['train'].train_test_split(test_size=0.1)['test'],
-        eval_dataset=data['test'].train_test_split(test_size=0.05)['test'],
+        train_dataset=train_dataset,
+        eval_dataset=test_dataset,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         optimizers=(optimizer, None),
@@ -578,12 +253,43 @@ def morph_train_with_trainer(model, data, text_tokenizer, to_train=False, to_eva
         results = trainer.evaluate(forced_bos_token_id=trg_lang_nllb_id)
         #results = trainer.evaluate()
         print(f"results: {results}")
-        with open('fi-en-morph-embed-dim-cat-first_try_model_results.txt', 'w') as sink:
+        with open('fi-en-morph-embed-dim-cat-first_try_model_results.txt', 'a') as sink:
             sink.write(str(results))
     trainer.save_model('./fi-en-morph-embed-dim-cat-first_try_test_model')
     
     return
 
+def training_pipeline(
+        initial_checkpoint,
+        src_lang,
+        trg_lang,
+        run_baseline=False,
+        to_train=True,
+        to_eval=True
+):
+    src_nllb = utils.get_nllb_code(src_lang)
+    trg_nllb = utils.get_nllb_code(trg_lang)
+    text_tokenizer = NllbTokenizer.from_pretrained(
+        initial_checkpoint,
+        src_lang=src_nllb,
+        tgt_lang=trg_nllb
+        )
+    tag_tokenizer = create_morph_tokenizer()
+    dataset_dict = tokenize_dataset(
+        text_tokenizer=text_tokenizer,
+        tag_tokenizer=tag_tokenizer,
+        src_lang=src_lang,
+        trg_lang=trg_lang
+        )
+    if run_baseline:
+        model = create_baseline_model()
+    else:
+        model = create_model()
+
+    morph_train_with_trainer(model, dataset_dict, text_tokenizer, to_train=to_train, to_eval=to_eval)
+    
+
+    return
 
 def main() -> None:
     #model = T5ForConditionalGeneration.from_pretrained(model_checkpoint)
