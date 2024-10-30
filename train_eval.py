@@ -1,13 +1,14 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
 #test test test
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, AdamW, NllbTokenizer, get_scheduler, Adafactor
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, NllbTokenizer, get_scheduler, Adafactor
 from datasets import Dataset, DatasetDict, load_from_disk, load_metric
 from typing import Callable
 from torch import cuda, Generator, no_grad, bfloat16, float16
 import torch
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
+from torch.optim import AdamW
 from evaluate import evaluator
 import numpy as np
 import utils
@@ -20,6 +21,7 @@ from morph_model import MorphM2M100, MorphModelDataCollator
 import evaluate
 import logging
 from datetime import datetime
+import os
 
 #import function_trace
 #some stuff that will be used everywhere perhaps
@@ -28,6 +30,7 @@ from datetime import datetime
 #trying gpu version override
 HSA_OVERRIDE_GFX_VERSION=1030
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 #in use
 def compute_metrics(
@@ -36,7 +39,7 @@ def compute_metrics(
     """
     
     """
-    print(f"-----------compute metrics-----------")
+    #print(f"-----------compute metrics-----------")
     #print(f"eval preds fields: {[entry for entry in eval_preds]}")
     #print(f"eval preds content: {[eval_preds[entry] for entry in eval_preds]}")
     tokenizer = NllbTokenizer.from_pretrained('facebook/nllb-200-distilled-600M')
@@ -159,7 +162,7 @@ def tokenize_dataset(
         dataset_dict = load_from_disk(f"{trg_lang}-{src_lang}-combined.hf")
     tokenized_dict = {}
     for split in dataset_dict:
-        print(f"split: {split}")
+        #print(f"split: {split}")
         dataset = dataset_dict[split]
         inputs = [ex for ex in dataset[f"{src_lang}_text"]]
         targets = [ex for ex in dataset[f"{trg_lang}_text"]]
@@ -172,7 +175,7 @@ def tokenize_dataset(
         model_inputs = Dataset.from_dict(model_inputs)
         tokenized_dict[split] = model_inputs
     tokenized_dataset_dict = DatasetDict(tokenized_dict)
-    print(f"final processed thing: {tokenized_dataset_dict}")
+    #print(f"final processed thing: {tokenized_dataset_dict}")
     return tokenized_dataset_dict
 
 #in use
@@ -184,9 +187,9 @@ def gen_training_args(
         output_dir=f"./{log_filepath}/training_results/",
         logging_dir=f"./{log_filepath}/training_logs/",
         fp16=True,
-        eval_strategy='epoch', #'no', 'steps', or 'epoch'
-        per_device_train_batch_size=1,
-        per_device_eval_batch_size=1,
+        eval_strategy='steps', #'no', 'steps', or 'epoch'
+        per_device_train_batch_size=16,
+        per_device_eval_batch_size=16,
         #learning_rate=5e-5,
         weight_decay=0.01,
         #logging_dir='./test_logs',
@@ -203,57 +206,73 @@ def gen_training_args(
     )
     return training_args
 
-#in use
-def morph_train_with_trainer(
-        model,
-        data,
-        text_tokenizer,
+
+def training_pipeline(
+        initial_checkpoint,
         src_lang,
         trg_lang,
-        to_train=False,
-        to_eval=False,
-        save_model=False,
-        save_to_cumulative=False,
+        load_from_disk=False,
+        model_disk_filepath=None,
+        save_model=True,
+        save_to_cumulative=True,
+        run_baseline=False,
+        to_train=True,
+        to_eval=True,
         proportion_of_train_dataset=1.0,
         proportion_of_test_dataset=1.0,
         mid_training_eval_sent_num=100
-        ):
+):
+    now = datetime.now().strftime(f"%Y-%m-%d_%H-%M")
+    model_mode = 'baseline' if run_baseline else 'experimental'
+    all_logs_filepath = f"{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}_{now}"
+    #train_results_filepath = f"./{all_logs_filepath}/train_results"
+    src_nllb = utils.get_nllb_code(src_lang)
+    trg_nllb = utils.get_nllb_code(trg_lang)
+    text_tokenizer = NllbTokenizer.from_pretrained(
+        initial_checkpoint,
+        src_lang=src_nllb,
+        tgt_lang=trg_nllb
+        )
+    tag_tokenizer = create_morph_tokenizer()
+    dataset_dict = tokenize_dataset(
+        text_tokenizer=text_tokenizer,
+        tag_tokenizer=tag_tokenizer,
+        src_lang=src_lang,
+        trg_lang=trg_lang
+        )
+    if run_baseline:
+        model = create_baseline_model()
+        data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
+    else:
+        model = create_model()
+        data_collator = MorphModelDataCollator(text_tokenizer, model)
+
     cumulative_model_path_holder_filename = "./cumulative_model.txt"
     trg_lang_nllb_code = utils.get_nllb_code(trg_lang)
     trg_lang_nllb_id = text_tokenizer.convert_tokens_to_ids(trg_lang_nllb_code)
-    #text_tokenizer = NllbTokenizer.from_pretrained(initial_checkpoint, src_lang=utils.get_nllb_code(src_lang))
-    #if False:
-    if isinstance(model, MorphM2M100):
-        data_collator = MorphModelDataCollator(text_tokenizer, model)
-    else:
-        data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
     
-    #model.gradient_checkpointing_enable()
     optimizer = AdamW(
-    #optimizer = Adafactor(
         model.parameters(),
-        #scale_parameter=True,
-        #relative_step=False,
-        #warmup_init=False,
         lr=5e-5
     )
 
     if proportion_of_train_dataset>=1.0:
-        train_dataset = data['train']
+        train_dataset = dataset_dict['train']
     else:
-        train_dataset = data['train'].train_test_split(test_size=proportion_of_train_dataset)['test']
-    mid_training_eval_proportion = mid_training_eval_sent_num / len(data['test'])
+        train_dataset = dataset_dict['train'].train_test_split(test_size=proportion_of_train_dataset)['test']
+    mid_training_eval_proportion = mid_training_eval_sent_num / len(dataset_dict['test'])
     if mid_training_eval_proportion > 1.0:
         mid_training_eval_proportion = 1.0
-    mid_training_eval_set = data['test'].train_test_split(test_size=mid_training_eval_proportion)['test']
+    mid_training_eval_set = dataset_dict['test'].train_test_split(test_size=mid_training_eval_proportion)['test']
     if proportion_of_test_dataset>=1.0:
-        test_dataset = data['test']
+        test_dataset = dataset_dict['test']
     else:
-        test_dataset = data['test'].train_test_split(test_size=proportion_of_test_dataset)['test']
+        test_dataset = dataset_dict['test'].train_test_split(test_size=proportion_of_test_dataset)['test']
 
     #TRAINING
     if to_train:
-        training_args = gen_training_args()
+        print('TRAIN')
+        training_args = gen_training_args(all_logs_filepath)
         training_trainer = Seq2SeqTrainer(
             model=model,
             args=training_args,
@@ -266,11 +285,12 @@ def morph_train_with_trainer(
         #does train return anything? I just added the output
         results = training_trainer.train()
         best_model_dir = training_trainer.state.best_model_checkpoint
-        
+ 
 
     #EVALUATION
     if to_eval:
-        eval_args = gen_training_args()
+        print('EVAL')
+        eval_args = gen_training_args(all_logs_filepath)
         eval_trainer = Seq2SeqTrainer(
             model=model,
             args=eval_args,
@@ -288,86 +308,19 @@ def morph_train_with_trainer(
         best_model_dir = eval_trainer.state.best_model_checkpoint
 
 
+    #this should only be the case if it's not baseline, will do once I combine these functions
     if save_model:
         if save_to_cumulative:
-            with open(cumulative_model_path_holder_filename, 'w') as sink:
-                sink.write(best_model_dir)
+            #need to fix, why is this returning None?
+            if best_model_dir is not None:
+                with open(cumulative_model_path_holder_filename, 'w') as sink:
+                    sink.write(best_model_dir)
 
-    #trainer.save_model('./fi-en-morph-embed-dim-cat-first_try_test_model')
-    
-    return
-
-def training_pipeline(
-        initial_checkpoint,
-        src_lang,
-        trg_lang,
-        load_from_disk=False,
-        model_disk_filepath=None,
-        save_model=False,
-        run_baseline=False,
-        to_train=True,
-        to_eval=True,
-        proportion_of_train_dataset=1.0,
-        proportion_of_test_dataset=1.0
-):
-    
-    all_logs_filepath = f"{src_lang}-{trg_lang}_train-{str(to_train)}_eval-{to_eval}_{datetime.now().strftime("%Y-%m-%d_%H-%M")}"
-    train_results_filepath = f"./{all_logs_filepath}/train_results"
-    src_nllb = utils.get_nllb_code(src_lang)
-    trg_nllb = utils.get_nllb_code(trg_lang)
-    text_tokenizer = NllbTokenizer.from_pretrained(
-        initial_checkpoint,
-        src_lang=src_nllb,
-        tgt_lang=trg_nllb
-        )
-    tag_tokenizer = create_morph_tokenizer()
-    dataset_dict = tokenize_dataset(
-        text_tokenizer=text_tokenizer,
-        tag_tokenizer=tag_tokenizer,
-        src_lang=src_lang,
-        trg_lang=trg_lang
-        )
-    if run_baseline:
-        model = create_baseline_model()
-    else:
-        model = create_model()
-
-
-
-    morph_train_with_trainer(
-        model,
-        dataset_dict,
-        text_tokenizer,
-        src_lang=src_lang,
-        trg_lang=trg_lang,
-        to_train=to_train,
-        to_eval=to_eval,
-        proportion_of_train_dataset=proportion_of_train_dataset,
-        proportion_of_test_dataset=proportion_of_test_dataset
-    )
     
 
     return
 
 def main() -> None:
-
-
-
-
-
-    #model = T5ForConditionalGeneration.from_pretrained(model_checkpoint)
-    #tokenizer = T5Tokenizer.from_pretrained(model_checkpoint)
-    #vocab = tokenizer.get_vocab()
-    #print(vocab)
-    """
-    # Calculate the maximum memory limit (80% of available memory)
-    virtual_memory = psutil.virtual_memory()
-    available_memory = virtual_memory.available
-    memory_limit = int(available_memory * 0.8)
-    
-    # Set the memory limit
-    resource.setrlimit(resource.RLIMIT_AS, (memory_limit, memory_limit))
-    """
 
     print(f"cuda device count: {cuda.device_count()}")
     print(f"cuda is available: {cuda.is_available()}")
@@ -376,82 +329,60 @@ def main() -> None:
 
     #oct 28 test
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+
+    this_src = 'tt'
+    this_trg = 'en'
+
+    print('non frozen')
     training_pipeline(
         initial_checkpoint=initial_checkpoint,
-        src_lang='tt',
-        trg_lang='en',
+        src_lang=this_src,
+        trg_lang=this_trg,
         run_baseline=False,
         to_train=True,
         to_eval=True,
-        proportion_of_train_dataset=0.1,
-        proportion_of_test_dataset=0.1
+        proportion_of_train_dataset=0.2,
+        proportion_of_test_dataset=0.5
     )
     return
 
-    #cuda.empty_cache()
-    #cuda.reset_max_memory_allocated()
-    #print(cuda.memory_summary())
-    #finetune_and_eval('facebook/nllb-200-distilled-600M', 'Morph', 'en', 'fi')
-    #return
 
 
-    #model = M2M100ForConditionalGeneration.from_pretrained('facebook/nllb-200-distilled-600m')
-
-    src_lang = 'fi'
-    trg_lang = 'en'
-    src_nllb = utils.get_nllb_code(src_lang)
-    trg_nllb = utils.get_nllb_code(trg_lang)
-    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
-    text_tokenizer = NllbTokenizer.from_pretrained(
-        initial_checkpoint,
-        src_lang=src_nllb,
-        tgt_lang=trg_nllb
-        )
-    tag_tokenizer = create_morph_tokenizer()
-    dataset_dict = tokenize_dataset(
-        text_tokenizer=text_tokenizer,
-        tag_tokenizer=tag_tokenizer,
-        src_lang=src_lang,
-        trg_lang=trg_lang
-        )
-
-
-
-    #################################
-    model = create_model()
-    #model = create_baseline_model()
-    ##############################
-
-    #model.config.decoder_start_token_id = 256047
-    #model.config.bos_token_id = 256042
-    #model.gradient_checkpointing_enable()
-    
-
-    #device = torch.device('cuda')
-    #model.to(device)
-    #for param in model.model.encoder.parameters():
-        #param.requires_grad = False
-    #data = preproc_data(text_tokenizer)
-    #data.to(device)
-    print('about to train')
-    morph_train_with_trainer(model, dataset_dict, text_tokenizer, to_train=True, to_eval=True)
-    #print(f"dataset size: {data.num_rows}")
-    #outputs = model(data['input_ids'], data['tags'], attention_mask=data['attention_mask'], labels=data['labels'])
-    #outputs = model(data['input_ids'], attention_mask=data['attention_mask'], labels=data['labels'])
-    #print(outputs)
-    return
-    dataloader = create_dataloaders()
-    morph_custom_train(model, dataloader, dataloader, 1)
+    print('baseline')
+    training_pipeline(
+        initial_checkpoint=initial_checkpoint,
+        src_lang=this_src,
+        trg_lang=this_trg,
+        run_baseline=True,
+        to_train=False,
+        to_eval=True,
+        proportion_of_train_dataset=0.05,
+        proportion_of_test_dataset=0.5
+    )
+    print('finetune')
+    training_pipeline(
+        initial_checkpoint=initial_checkpoint,
+        src_lang=this_src,
+        trg_lang=this_trg,
+        run_baseline=True,
+        to_train=True,
+        to_eval=True,
+        proportion_of_train_dataset=0.05,
+        proportion_of_test_dataset=0.5
+    )
+    print('experimental')
+    training_pipeline(
+        initial_checkpoint=initial_checkpoint,
+        src_lang=this_src,
+        trg_lang=this_trg,
+        run_baseline=False,
+        to_train=True,
+        to_eval=True,
+        proportion_of_train_dataset=0.05,
+        proportion_of_test_dataset=0.5
+    )
     return
 
-
-
-    #set_default_device("cuda")
-    #eval(model_checkpoint, 'se', 'en')
-    #finetune_and_eval('jbochi/madlad400-3b-mt', 'MADLAD', 'en', 'fi')
-    #finetune_and_eval('facebook/nllb-200-distilled-600M', 'NLLB', 'en', 'fi')
-    finetune_and_eval('facebook/nllb-200-distilled-600M', 'Morph', 'en', 'fi')
-    return
 
 if __name__ == "__main__":
     main()

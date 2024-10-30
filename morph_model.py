@@ -262,10 +262,18 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             combined_encoder_outputs = cat((encoder_outputs.last_hidden_state, morph_encoder_outputs.last_hidden_state), dim=-1)
             projected_encoder_outputs = self.projection_layer(combined_encoder_outputs)
             encoder_outputs = BaseModelOutput(
-                last_hidden_state=projected_encoder_outputs[0],
-                hidden_states=projected_encoder_outputs[1] if len(projected_encoder_outputs) > 1 else None,
-                attentions=projected_encoder_outputs[2] if len(projected_encoder_outputs) > 2 else None,
+                last_hidden_state=projected_encoder_outputs,
+                #hidden_states=projected_encoder_outputs[1] if len(projected_encoder_outputs) > 1 else None,
+                #attentions=projected_encoder_outputs[2] if len(projected_encoder_outputs) > 2 else None,
+                hidden_states=None,
+                attentions=None
             )
+            #print(f"projected_encoder_outputs shape: {projected_encoder_outputs.shape}")  # Expecting (batch_size, sequence_length, d_model)
+            #print(f"attention_mask shape: {attention_mask.shape}")  # Expecting (batch_size, sequence_length)
+            #print(f"encoder_outputs shape: {encoder_outputs.shape}")  # Expecting (batch_size, sequence_length, d_model)
+            #print(f"encoder_outputs[0] shape: {encoder_outputs[0].shape}")  # Expecting (batch_size, sequence_length, d_model)
+            #print(f"encoder_outputs last hidden state shape: {encoder_outputs.last_hidden_state.shape}")  # Expecting (batch_size, sequence_length, d_model)
+
             #print(f"modified encoder outputs type: {type(encoder_outputs)}")
 
 
@@ -281,7 +289,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         decoder_outputs = self.model.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
-            encoder_hidden_states=encoder_outputs[0],
+            encoder_hidden_states=encoder_outputs.last_hidden_state,
             encoder_attention_mask=attention_mask,
             head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
@@ -615,14 +623,17 @@ class MorphModelDataCollator(DataCollatorForSeq2Seq):
         max_length_input = max(len(ids) for ids in input_ids)
         max_length_tags = max(len(ids) for ids in tags)
         max_length = max(max_length_input, max_length_tags)
+        max_label_length = max(len(ids) for ids in labels)
 
         batch_size = len(data)
+        #print(f"batch size: {batch_size}")
         padded_input_ids = torch.zeros((batch_size, max_length), dtype=torch.long)
         padded_tags = torch.zeros((batch_size, max_length), dtype=torch.long)
         attention_mask = torch.zeros((batch_size, max_length), dtype=torch.long)
         tags_attention_mask = torch.zeros((batch_size, max_length), dtype=torch.long)
+        padded_labels = torch.full((batch_size, max_label_length), -100, dtype=torch.long)
 
-        for i, (input_ids_seq, tags_seq) in enumerate(zip(input_ids, tags)):
+        for i, (input_ids_seq, tags_seq, label_seq) in enumerate(zip(input_ids, tags, labels)):
             # Pad input_ids and create attention mask
             padded_input_ids[i, :len(input_ids_seq)] = torch.tensor(input_ids_seq, dtype=torch.long)
             attention_mask[i, :len(input_ids_seq)] = 1
@@ -630,12 +641,25 @@ class MorphModelDataCollator(DataCollatorForSeq2Seq):
             # Pad new_input_ids and create new attention mask
             padded_tags[i, :len(tags_seq)] = torch.tensor(tags_seq, dtype=torch.long)
             tags_attention_mask[i, :len(tags_seq)] = 1
+        
+            padded_labels[i, :len(label_seq)] = torch.tensor(label_seq, dtype=torch.long)
 
-        batch = super().__call__(data)
-        batch['input_ids'] = padded_input_ids
-        batch['attention_mask'] = attention_mask
-        batch['tags'] = padded_tags
-        batch['tags_attention_mask'] = tags_attention_mask
+        # Debugging prints for tensor shapes
+        #print(f"padded_input_ids shape: {padded_input_ids.shape}")
+        #print(f"attention_mask shape: {attention_mask.shape}")
+        #print(f"padded_tags shape: {padded_tags.shape}")
+        #print(f"tags_attention_mask shape: {tags_attention_mask.shape}")
+        #print(f"padded_labels shape: {padded_labels.shape}")
+
+
+        #batch = super().__call__(data)
+        batch = {
+            'input_ids': padded_input_ids,
+            'attention_mask': attention_mask,
+            'tags': padded_tags,
+            'tags_attention_mask': tags_attention_mask,
+            'labels': padded_labels,
+        }
         return batch
 
         #old, deprecated, to remove
