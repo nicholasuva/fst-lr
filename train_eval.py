@@ -1,9 +1,11 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
 #test test test
-from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, NllbTokenizer, get_scheduler, Adafactor
+from transformers import PretrainedConfig, GenerationConfig, TrainerCallback, Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, NllbTokenizer, get_scheduler, Adafactor
 from datasets import Dataset, DatasetDict, load_from_disk, load_metric
 from typing import Callable
+from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders, processors
+
 from torch import cuda, Generator, no_grad, bfloat16, float16
 import torch
 from torch.nn.utils import clip_grad_norm_
@@ -14,15 +16,19 @@ import numpy as np
 import utils
 from peft import get_peft_model, LoraConfig, TaskType
 from tqdm.auto import tqdm
-from morph_tokenizer import create_morph_tokenizer
+#from morph_tokenizer import create_morph_tokenizer
 
-from morph_model import MorphM2M100, MorphModelDataCollator
+from morph_model import MorphM2M100, MorphModelDataCollator, DebugTrainer
 
+import argparse
 import evaluate
 import logging
 from datetime import datetime
 import os
+import re
+import faulthandler
 
+faulthandler.enable()
 #import function_trace
 #some stuff that will be used everywhere perhaps
 #model_checkpoint = 'jbochi/madlad400-3b-mt'
@@ -31,6 +37,24 @@ import os
 HSA_OVERRIDE_GFX_VERSION=1030
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+#torch.autograd.set_detect_anomaly(True)
+
+#class GradientClippingCallback(TrainerCallback):
+    #def on_step_end(self, args, state, control, **kwargs):
+        #torch.nn.utils.clip_grad_norm_(self.model.parameters())
+
+
+class GradientClippingCallback(TrainerCallback):
+    def __init__(self, max_norm=1.0):
+        self.max_norm = max_norm
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        # Apply gradient clipping
+        if model is not None:
+            #print('clipping')
+            torch.nn.utils.clip_grad_norm_(model.parameters(), self.max_norm)
 
 #in use
 def compute_metrics(
@@ -127,6 +151,9 @@ def create_model():
     print('model created')
     return model
 
+
+
+
 #in use
 def create_baseline_model():
     print('creating model')
@@ -135,6 +162,10 @@ def create_baseline_model():
     #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
     #model = MorphM2M100(config)
     model = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint)
+    config_dict = model.config.to_dict()
+    del config_dict['max_length']
+    model.config = PretrainedConfig.from_dict(config_dict)
+    model.generation_config.max_length=200
     #model = M2M100ForConditionalGeneration(config)
     if False:
         peft_config = LoraConfig(
@@ -147,21 +178,55 @@ def create_baseline_model():
     print('model created')
     return model
 
+def create_morph_tokenizer(
+        src_lang,
+        trg_lang,     
+):
+    try:
+        dataset = load_from_disk(f"{trg_lang}-{src_lang}-combined.hf")
+    except:
+        dataset = load_from_disk(f"{src_lang}-{trg_lang}-combined.hf")
+    data = dataset['train'][f'{src_lang} tags']
+    #print(data[0])
+    data = [' '.join(tag for tag in tags) for tags in data]
+    data = [sent.replace('+', '') for sent in data]
+    data = [clean_text(sent) for sent in data]
+    #print(data[0])
+    tokenizer = Tokenizer(models.WordLevel(unk_token='[UNK]'))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    trainer = trainers.WordLevelTrainer(special_tokens=['[UNK]', '[PAD]', '[CLS]', '[SEP]'])
+    tokenizer.train_from_iterator(data, trainer)
+    tokenizer.save(f'{src_lang}_morph_tag_tokenizer.json')
+    #test_sent = data[0]
+    #encoded = tokenizer.encode(test_sent)
+    #print(encoded.tokens)
+    #print(encoded.ids)
+    return tokenizer
+
+
+
+def clean_text(text):
+    text = re.sub(r"[^a-zA-Z\u0400-\u04FF0-9 .,!?'\-]", "", text)
+    return text
+
 #in use
 def tokenize_dataset(
     text_tokenizer,
     tag_tokenizer,
     src_lang,
     trg_lang,
-    max_length=200
+    max_length=128
     ):
     #load the dataset
     try:
         dataset_dict = load_from_disk(f"{src_lang}-{trg_lang}-combined.hf")
     except:
         dataset_dict = load_from_disk(f"{trg_lang}-{src_lang}-combined.hf")
+    
+    """
     tokenized_dict = {}
     for split in dataset_dict:
+        cleaned_data = []
         #print(f"split: {split}")
         dataset = dataset_dict[split]
         inputs = [ex for ex in dataset[f"{src_lang}_text"]]
@@ -176,11 +241,44 @@ def tokenize_dataset(
         tokenized_dict[split] = model_inputs
     tokenized_dataset_dict = DatasetDict(tokenized_dict)
     #print(f"final processed thing: {tokenized_dataset_dict}")
+    #return tokenized_dataset_dict
+    """
+    tokenized_dict = {}
+    for split in dataset_dict:
+        cleaned_data = []
+        dataset = dataset_dict[split]
+        for ex in dataset:
+            inputs = ex[f"{src_lang}_text"]
+            inputs = clean_text(inputs)
+            targets = ex[f"{trg_lang}_text"]
+            targets = clean_text(targets)
+            tags = ex[f'{src_lang} tags']
+            tags = ' '.join(tag for tag in tags)
+            tags = tags.replace('+', '')
+            tags = clean_text(tags)
+
+            model_inputs = text_tokenizer(inputs, text_target = targets, max_length=max_length, padding=False, truncation=True)
+            model_tag_inputs = tag_tokenizer.encode(tags).ids[:max_length]
+            if len(model_inputs['input_ids'])>0 and len(model_inputs['labels'])>0 and len(model_tag_inputs)>0:
+                cleaned_data.append(
+                    {
+                        'input_ids': model_inputs['input_ids'],
+                        'labels': model_inputs['labels'],
+                        'tags': model_tag_inputs
+                    }
+                )
+        cleaned_data = Dataset.from_list(cleaned_data)
+        tokenized_dict[split] = cleaned_data
+    tokenized_dataset_dict = DatasetDict(tokenized_dict)
     return tokenized_dataset_dict
 
-#in use
+
+
+
+#deprecated
 def gen_training_args(
-        log_filepath
+        log_filepath,
+        batch_size=1
 ):
     training_args = Seq2SeqTrainingArguments(
         #output_dir='./tt-en-init-test_results',
@@ -188,8 +286,8 @@ def gen_training_args(
         logging_dir=f"./{log_filepath}/training_logs/",
         fp16=True,
         eval_strategy='steps', #'no', 'steps', or 'epoch'
-        per_device_train_batch_size=16,
-        per_device_eval_batch_size=16,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
         #learning_rate=5e-5,
         weight_decay=0.01,
         #logging_dir='./test_logs',
@@ -202,6 +300,7 @@ def gen_training_args(
         greater_is_better=True,
         save_total_limit=3,
         warmup_steps=10,
+
         #label_smoothing_factor=0.1
     )
     return training_args
@@ -220,7 +319,8 @@ def training_pipeline(
         to_eval=True,
         proportion_of_train_dataset=1.0,
         proportion_of_test_dataset=1.0,
-        mid_training_eval_sent_num=100
+        mid_training_eval_sent_num=128,
+        batch_size=1
 ):
     now = datetime.now().strftime(f"%Y-%m-%d_%H-%M")
     model_mode = 'baseline' if run_baseline else 'experimental'
@@ -228,18 +328,24 @@ def training_pipeline(
     #train_results_filepath = f"./{all_logs_filepath}/train_results"
     src_nllb = utils.get_nllb_code(src_lang)
     trg_nllb = utils.get_nllb_code(trg_lang)
+
+    #CREATE TOKENIZERS
     text_tokenizer = NllbTokenizer.from_pretrained(
         initial_checkpoint,
         src_lang=src_nllb,
         tgt_lang=trg_nllb
         )
-    tag_tokenizer = create_morph_tokenizer()
+    tag_tokenizer = create_morph_tokenizer(src_lang=src_lang, trg_lang=trg_lang)
+    
+    #PREPROCESS DATA
     dataset_dict = tokenize_dataset(
         text_tokenizer=text_tokenizer,
         tag_tokenizer=tag_tokenizer,
         src_lang=src_lang,
         trg_lang=trg_lang
         )
+    
+    #CREATE MODEL AND DATA COLLATOR (need to add ability to load a model)
     if run_baseline:
         model = create_baseline_model()
         data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
@@ -251,29 +357,70 @@ def training_pipeline(
     trg_lang_nllb_code = utils.get_nllb_code(trg_lang)
     trg_lang_nllb_id = text_tokenizer.convert_tokens_to_ids(trg_lang_nllb_code)
     
+    #LOAD OPTIMIZER
     optimizer = AdamW(
         model.parameters(),
-        lr=5e-5
+        lr=3e-5
     )
 
+    #PROPORTION OUT DATASETS
     if proportion_of_train_dataset>=1.0:
         train_dataset = dataset_dict['train']
     else:
         train_dataset = dataset_dict['train'].train_test_split(test_size=proportion_of_train_dataset)['test']
     mid_training_eval_proportion = mid_training_eval_sent_num / len(dataset_dict['test'])
-    if mid_training_eval_proportion > 1.0:
-        mid_training_eval_proportion = 1.0
-    mid_training_eval_set = dataset_dict['test'].train_test_split(test_size=mid_training_eval_proportion)['test']
+    if mid_training_eval_proportion >= 1.0:
+        mid_training_eval_set = dataset_dict['test']
+    else:
+        #mid_training_eval_proportion = 1.0
+        mid_training_eval_set = dataset_dict['test'].train_test_split(test_size=mid_training_eval_proportion)['test']
     if proportion_of_test_dataset>=1.0:
         test_dataset = dataset_dict['test']
     else:
         test_dataset = dataset_dict['test'].train_test_split(test_size=proportion_of_test_dataset)['test']
 
+    #SOME OPTIMIZATIONS
+    #torch.autograd.set_detect_anomaly(True)
+    torch.cuda.synchronize()
+    #model.gradient_checkpointing_enable()
+
+    #GENERATE TRAINING ARGUMENTS
+    #generation_config = GenerationConfig(
+        #max_length=200,
+        #forced_bos_token_id=trg_lang_nllb_id
+    #)
+
+    training_args = Seq2SeqTrainingArguments(
+        #output_dir='./tt-en-init-test_results',
+        output_dir=f"./{all_logs_filepath}/training_results/",
+        logging_dir=f"./{all_logs_filepath}/training_logs/",
+        fp16=True,
+        eval_strategy='steps', #'no', 'steps', or 'epoch'
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        #learning_rate=5e-5,
+        weight_decay=0.01,
+        #logging_dir='./test_logs',
+        logging_steps=500,
+        save_steps=500,
+        num_train_epochs=3,
+        predict_with_generate=True,
+        load_best_model_at_end=True,
+        metric_for_best_model='eval_bleu',
+        greater_is_better=True,
+        save_total_limit=3,
+        warmup_steps=10,
+        #label_smoothing_factor=0.1
+        #generation_config=generation_config
+    )
+
+
     #TRAINING
     if to_train:
         print('TRAIN')
-        training_args = gen_training_args(all_logs_filepath)
+        #training_args = gen_training_args(all_logs_filepath, batch_size=batch_size)
         training_trainer = Seq2SeqTrainer(
+        #training_trainer = DebugTrainer(
             model=model,
             args=training_args,
             train_dataset=train_dataset,
@@ -281,19 +428,24 @@ def training_pipeline(
             data_collator=data_collator,
             compute_metrics=compute_metrics,
             optimizers=(optimizer, None),
+            callbacks=[GradientClippingCallback(max_norm=1.0)],
         )
         #does train return anything? I just added the output
         results = training_trainer.train()
         best_model_dir = training_trainer.state.best_model_checkpoint
- 
+
+        #TRAINING CLEANUP
+        del training_trainer
+        del train_dataset
+        del mid_training_eval_set
 
     #EVALUATION
     if to_eval:
         print('EVAL')
-        eval_args = gen_training_args(all_logs_filepath)
+        #eval_args = gen_training_args(all_logs_filepath, batch_size=batch_size)
         eval_trainer = Seq2SeqTrainer(
             model=model,
-            args=eval_args,
+            args=training_args,
             #train_dataset=train_dataset,
             eval_dataset=test_dataset,
             data_collator=data_collator,
@@ -307,6 +459,10 @@ def training_pipeline(
             #sink.write(str(results))
         best_model_dir = eval_trainer.state.best_model_checkpoint
 
+        #EVAL CLEANUP
+        del eval_trainer
+        del test_dataset
+
 
     #this should only be the case if it's not baseline, will do once I combine these functions
     if save_model:
@@ -316,49 +472,109 @@ def training_pipeline(
                 with open(cumulative_model_path_holder_filename, 'w') as sink:
                     sink.write(best_model_dir)
 
-    
+    #OVERALL CLEANUP
+    del model
+    del optimizer
+    del dataset_dict
+    torch.cuda.empty_cache()
 
     return
 
-def main() -> None:
+def main(
+        args: argparse.Namespace
+) -> None:
 
+    #CUDA ENABLED SANITY CHECK
     print(f"cuda device count: {cuda.device_count()}")
     print(f"cuda is available: {cuda.is_available()}")
     print(f"cuda current device: {cuda.current_device()}")
     print(f"cuda current device name: {cuda.get_device_name(cuda.current_device())}")
 
+    #PARSE ARGUMENTS
+    if(args.title):
+        print(args.title)
+    src_lang = args.src
+    trg_lang = args.trg
+    to_train = True if args.train else False
+    to_eval = True if args.eval else False
+    run_baseline = True if args.baseline else False
+
+    print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
+
+
     #oct 28 test
     initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+    run_langs = ['tt'] #just baseline plus experimental, not finetune
 
-    this_src = 'tt'
-    this_trg = 'en'
-
-    print('non frozen')
     training_pipeline(
         initial_checkpoint=initial_checkpoint,
-        src_lang=this_src,
-        trg_lang=this_trg,
-        run_baseline=False,
-        to_train=True,
-        to_eval=True,
-        proportion_of_train_dataset=0.2,
-        proportion_of_test_dataset=0.5
+        src_lang=src_lang,
+        trg_lang=trg_lang,
+        run_baseline=run_baseline,
+        to_train=to_train,
+        to_eval=to_eval,
+        proportion_of_train_dataset=1.0,
+        proportion_of_test_dataset=1.0,
+        batch_size=8
     )
     return
 
 
-
-    print('baseline')
-    training_pipeline(
-        initial_checkpoint=initial_checkpoint,
-        src_lang=this_src,
-        trg_lang=this_trg,
-        run_baseline=True,
-        to_train=False,
-        to_eval=True,
-        proportion_of_train_dataset=0.05,
-        proportion_of_test_dataset=0.5
-    )
+    
+    these_src = ['so', 'ba', 'fo', 'ga']
+    this_trg = 'en'
+    for this_src in these_src:
+        print(this_src)
+        """
+        print('baseline')
+        training_pipeline(
+            initial_checkpoint=initial_checkpoint,
+            src_lang=this_src,
+            trg_lang=this_trg,
+            run_baseline=True,
+            to_train=False,
+            to_eval=True,
+            proportion_of_train_dataset=1.0,
+            proportion_of_test_dataset=1.0
+        )
+        """
+        print('Baseline')
+        training_pipeline(
+            initial_checkpoint=initial_checkpoint,
+            src_lang=this_src,
+            trg_lang=this_trg,
+            run_baseline=True,
+            to_train=False,
+            to_eval=True,
+            proportion_of_train_dataset=1.0,
+            proportion_of_test_dataset=1.0,
+            batch_size=8
+        )
+        print('Finetune')
+        training_pipeline(
+            initial_checkpoint=initial_checkpoint,
+            src_lang=this_src,
+            trg_lang=this_trg,
+            run_baseline=True,
+            to_train=True,
+            to_eval=True,
+            proportion_of_train_dataset=1.0,
+            proportion_of_test_dataset=1.0,
+            batch_size=8
+        )
+        print('experimental')
+        training_pipeline(
+            initial_checkpoint=initial_checkpoint,
+            src_lang=this_src,
+            trg_lang=this_trg,
+            run_baseline=False,
+            to_train=True,
+            to_eval=True,
+            proportion_of_train_dataset=1.0,
+            proportion_of_test_dataset=1.0,
+            batch_size=8
+        )
+    return
     print('finetune')
     training_pipeline(
         initial_checkpoint=initial_checkpoint,
@@ -367,8 +583,8 @@ def main() -> None:
         run_baseline=True,
         to_train=True,
         to_eval=True,
-        proportion_of_train_dataset=0.05,
-        proportion_of_test_dataset=0.5
+        proportion_of_train_dataset=1.0,
+        proportion_of_test_dataset=1.0
     )
     print('experimental')
     training_pipeline(
@@ -378,11 +594,66 @@ def main() -> None:
         run_baseline=False,
         to_train=True,
         to_eval=True,
-        proportion_of_train_dataset=0.05,
-        proportion_of_test_dataset=0.5
+        proportion_of_train_dataset=1.0,
+        proportion_of_test_dataset=1.0
     )
     return
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--title",
+        required=False,
+        type=str,
+        help="a title to print to the console"
+    )
+    parser.add_argument(
+        "--src",
+        required=True,
+        type=str,
+        help="source language ISO 639 set 1 code"
+    )
+    parser.add_argument(
+        "--trg",
+        required=True,
+        type=str,
+        help="target language ISO 639 set 1 code"
+    )
+    parser.add_argument(
+        "--train",
+        action='store_true',
+        #required=True,
+        #default=True,
+        #type=bool,
+        help="whether to train the model"
+    )
+    parser.add_argument(
+        "--eval",
+        action='store_true',
+        #required=True,
+        #default=True,
+        #type=bool,
+        help="whether to evaluate the model"
+    )
+    parser.add_argument(
+        "--baseline",
+        action='store_true',
+        #required=True,
+        #default=False,
+        #type=bool,
+        help="whether to run the baseline NLLB-200-distilled-600M model (instead of the experimental version)"
+    )
+
+    main(parser.parse_args())
+
+
+"""
+what args do I need
+src lang
+trg lang
+to train
+to eval
+baseline or experimental
+other exp parameters like idk, save and load cumulative, adjust lr, that kind of thing
+"""

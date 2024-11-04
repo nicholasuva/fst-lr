@@ -1,4 +1,4 @@
-from transformers import M2M100ForConditionalGeneration, M2M100Config, Seq2SeqTrainer, DataCollatorForSeq2Seq
+from transformers import M2M100ForConditionalGeneration, M2M100Config, Seq2SeqTrainer, DataCollatorForSeq2Seq, GenerationConfig, PretrainedConfig
 from transformers.modeling_outputs import Seq2SeqLMOutput, Seq2SeqModelOutput, BaseModelOutput
 from transformers.models.m2m_100.modeling_m2m_100 import M2M100Encoder, shift_tokens_right
 from torch import cat, float16
@@ -16,7 +16,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         self,
         checkpoint,
         morph_encoder_config,
-        freeze_base_encoder=False,
+        freeze_base_encoder=True,
         encoder_scheme="embed_dim"
         ):
         """
@@ -25,15 +25,18 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         """
         #create base encoder-decoder model and lm_head from pretrained checkpoint
         source_model = M2M100ForConditionalGeneration.from_pretrained(checkpoint)
-        config = source_model.config
+        config_dict = source_model.config.to_dict()
+        del config_dict['max_length']
+        config = PretrainedConfig.from_dict(config_dict)
         super().__init__(config)
+        self.generation_config.max_length=200
         self.model = source_model.model
         self.lm_head = source_model.lm_head
         
         #create new encoder for morph tags from config
         self.morph_encoder = M2M100Encoder(morph_encoder_config)
 
-        #create projection layer for correncting concatenated dimension
+        #create projection layer for correcting concatenated dimension
         if encoder_scheme == "embed_dim":
             self.projection_layer = torch.nn.Linear(
                 config.d_model+morph_encoder_config.d_model,
@@ -47,12 +50,12 @@ class MorphM2M100(M2M100ForConditionalGeneration):
 
     #deprecated
     def legacy__init__(self, config, max_length=200):
-        print('before model initialized')
+        #print('before model initialized')
         utils.log_memory_usage()
         config.max_length = max_length
         config.torch_dtype=float16
         super().__init__(config)
-        print('after base model initialized')
+        #print('after base model initialized')
         utils.log_memory_usage()
         #morph tag encoder
         #self.morph_encoder = self.model.encoder.__class__(config)
@@ -69,13 +72,13 @@ class MorphM2M100(M2M100ForConditionalGeneration):
 
 
         #self.morph_encoder = M2M100ForConditionalGeneration(config).get_encoder()
-        print('after morph encoder initialized')
+        #print('after morph encoder initialized')
         utils.log_memory_usage()
         #self.morph_encoder.layers = self.morph_encoder.layers[:2]
-        print('after base model reshaped')
+        #print('after base model reshaped')
         utils.log_memory_usage()
         self.projection_layer = torch.nn.Linear(config.d_model+morph_encoder_dim, config.d_model)
-        print('after projection layer initialized')
+        #print('after projection layer initialized')
         utils.log_memory_usage()
         for param in self.model.encoder.parameters():
             param.requires_grad = False
@@ -236,6 +239,10 @@ class MorphM2M100(M2M100ForConditionalGeneration):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor], Seq2SeqModelOutput]:
+        #print('start inner forward')
+        
+
+
         output_attentions = output_attentions if output_attentions is not None else self.model.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.model.config.output_hidden_states
@@ -261,6 +268,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             )
             combined_encoder_outputs = cat((encoder_outputs.last_hidden_state, morph_encoder_outputs.last_hidden_state), dim=-1)
             projected_encoder_outputs = self.projection_layer(combined_encoder_outputs)
+            assert encoder_outputs.last_hidden_state.shape == morph_encoder_outputs.last_hidden_state.shape == projected_encoder_outputs.shape
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=projected_encoder_outputs,
                 #hidden_states=projected_encoder_outputs[1] if len(projected_encoder_outputs) > 1 else None,
@@ -270,7 +278,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             )
             #print(f"projected_encoder_outputs shape: {projected_encoder_outputs.shape}")  # Expecting (batch_size, sequence_length, d_model)
             #print(f"attention_mask shape: {attention_mask.shape}")  # Expecting (batch_size, sequence_length)
-            #print(f"encoder_outputs shape: {encoder_outputs.shape}")  # Expecting (batch_size, sequence_length, d_model)
+            #print(f"encoder_outputs shape: {encoder_outputs.last_hidden_state.shape}")  # Expecting (batch_size, sequence_length, d_model)
             #print(f"encoder_outputs[0] shape: {encoder_outputs[0].shape}")  # Expecting (batch_size, sequence_length, d_model)
             #print(f"encoder_outputs last hidden state shape: {encoder_outputs.last_hidden_state.shape}")  # Expecting (batch_size, sequence_length, d_model)
 
@@ -286,6 +294,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             )
 
         # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
+        #print('before decoder')
         decoder_outputs = self.model.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -300,7 +309,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-
+        #print('after decoder')
         if not return_dict:
             return decoder_outputs + encoder_outputs
 
@@ -345,6 +354,11 @@ class MorphM2M100(M2M100ForConditionalGeneration):
 
         Returns:
         """
+        #print(f"input ids: {input_ids}")
+        #print(f"labels: {labels}")
+        #print(f"tags: {tags}")
+        #print(f"attention_mask: {attention_mask}")
+        #print(f"tags_attention_mask: {tags_attention_mask}")
         #copied from the forward fct from M2M100ForConditionalGeneration
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -400,7 +414,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             labels = labels.to(lm_logits.device)
             loss_fct = torch.nn.CrossEntropyLoss()
             masked_lm_loss = loss_fct(lm_logits.view(-1, self.config.vocab_size), labels.view(-1))
-
+        #print('after lm head calc')
         if not return_dict:
             output = (lm_logits,) + outputs[1:]
             return ((masked_lm_loss,) + output) if masked_lm_loss is not None else output
@@ -612,6 +626,7 @@ class MorphModelDataCollator(DataCollatorForSeq2Seq):
 
     #in use
     def __call__(self, data):
+
         #print(f"custom data collator input: {data}")
         #print(f"custom data collator input: {[d for d in data]}")
 
@@ -661,6 +676,9 @@ class MorphModelDataCollator(DataCollatorForSeq2Seq):
             'labels': padded_labels,
         }
         return batch
+        #except Exception as e:
+            #print('error with collating this batch')
+            #raise e
 
         #old, deprecated, to remove
         batch_input_ids = self.tokenizer.pad({'input_ids': input_ids}, padding=self.padding, return_tensors='pt')
@@ -712,6 +730,18 @@ class ForwardOnlyTrainer(Seq2SeqTrainer):
         print('after compute_loss')
         utils.log_memory_usage()
         return result
+
+
+class DebugTrainer(Seq2SeqTrainer):
+    def training_step(self, model, inputs):
+        try:
+            # Print inputs to identify data causing the error
+            #print("Current batch inputs:", inputs)
+            return super().training_step(model, inputs)
+        except Exception as e:
+            #print("Error encountered with inputs:")
+            raise e
+
 
 """
 class NewMorphDataCollator(DataCollatorForSeq2Seq):
