@@ -20,10 +20,11 @@ from tqdm.auto import tqdm
 
 from morph_model import MorphM2M100, MorphModelDataCollator, DebugTrainer
 
+import json
 import argparse
 import evaluate
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import re
 import faulthandler
@@ -320,11 +321,13 @@ def training_pipeline(
         proportion_of_train_dataset=1.0,
         proportion_of_test_dataset=1.0,
         mid_training_eval_sent_num=128,
-        batch_size=1
+        batch_size=1,
+        expdir=''
 ):
-    now = datetime.now().strftime(f"%Y-%m-%d_%H-%M")
+    now = datetime.now() - timedelta(hours=5, minutes=0) #accounting for timezone
+    now = now.strftime(f"%Y-%m-%d_%H-%M")
     model_mode = 'baseline' if run_baseline else 'experimental'
-    all_logs_filepath = f"{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}_{now}"
+    all_logs_filepath = f"{expdir}/{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}_{now}"
     #train_results_filepath = f"./{all_logs_filepath}/train_results"
     src_nllb = utils.get_nllb_code(src_lang)
     trg_nllb = utils.get_nllb_code(trg_lang)
@@ -455,6 +458,9 @@ def training_pipeline(
         results = eval_trainer.evaluate(forced_bos_token_id=trg_lang_nllb_id)
         #results = trainer.evaluate()
         print(f"results: {results}")
+        eval_results_filepath = f"./{all_logs_filepath}/evaluation_results.json"
+        with open(eval_results_filepath, 'w') as sink:
+            json.dump(results, sink, indent=2)
         #with open('fi-en-morph-embed-dim-cat-first_try_model_results.txt', 'a') as sink:
             #sink.write(str(results))
         best_model_dir = eval_trainer.state.best_model_checkpoint
@@ -495,6 +501,7 @@ def main(
         print(args.title)
     src_lang = args.src
     trg_lang = args.trg
+    expdir = args.expdir
     to_train = True if args.train else False
     to_eval = True if args.eval else False
     run_baseline = True if args.baseline else False
@@ -515,7 +522,8 @@ def main(
         to_eval=to_eval,
         proportion_of_train_dataset=1.0,
         proportion_of_test_dataset=1.0,
-        batch_size=8
+        batch_size=8,
+        expdir=expdir
     )
     return
 
@@ -619,6 +627,12 @@ if __name__ == "__main__":
         required=True,
         type=str,
         help="target language ISO 639 set 1 code"
+    )
+    parser.add_argument(
+        "--expdir",
+        required=True,
+        type=str,
+        help="directory for results of this experiment"
     )
     parser.add_argument(
         "--train",
