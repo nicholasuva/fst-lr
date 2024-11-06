@@ -125,16 +125,18 @@ def compute_metrics(
     return results
 
 #in use
-def create_model():
-    print('creating model')
-    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+def create_model(
+        initial_checkpoint
+):
+    print(f'creating model from initial checkpoint: {initial_checkpoint}')
+    #initial_checkpoint = 'facebook/nllb-200-distilled-600M'
     morph_encoder_config = M2M100Config(
         vocab_size=1024,
         encoder_layers=2,
-        d_model=1024,
-        dropout=0.1,
+        d_model=512,
+        dropout=0.2,
         encoder_layerdrop=0,
-        pad_token_id=1,
+        pad_token_id=0,
         max_position_embeddings=1024,
         scale_embedding=True,
     )
@@ -181,7 +183,8 @@ def create_baseline_model():
 
 def create_morph_tokenizer(
         src_lang,
-        trg_lang,     
+        trg_lang,    
+        expdir 
 ):
     try:
         dataset = load_from_disk(f"{trg_lang}-{src_lang}-combined.hf")
@@ -189,21 +192,39 @@ def create_morph_tokenizer(
         dataset = load_from_disk(f"{src_lang}-{trg_lang}-combined.hf")
     data = dataset['train'][f'{src_lang} tags']
     #print(data[0])
-    data = [' '.join(tag for tag in tags) for tags in data]
-    data = [sent.replace('+', '') for sent in data]
-    data = [clean_text(sent) for sent in data]
+    data = [clean_tags(tags) for tags in data]
+    #data = [' '.join(tag for tag in tags) for tags in data]
+    #data = [sent.replace('+', '') for sent in data]
+    #data = [clean_text(sent) for sent in data]
     #print(data[0])
     tokenizer = Tokenizer(models.WordLevel(unk_token='[UNK]'))
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     trainer = trainers.WordLevelTrainer(special_tokens=['[UNK]', '[PAD]', '[CLS]', '[SEP]'])
     tokenizer.train_from_iterator(data, trainer)
-    tokenizer.save(f'{src_lang}_morph_tag_tokenizer.json')
+    tokenizer.save(f'./{expdir}/tokenizers/{src_lang}_morph_tag_tokenizer.json')
     #test_sent = data[0]
     #encoded = tokenizer.encode(test_sent)
     #print(encoded.tokens)
     #print(encoded.ids)
     return tokenizer
 
+def clean_tags(
+        tag_seq
+        ):
+    """
+    clean and preprocess a single sequence of tags (corresponding to one sentence)
+    """
+    tags = ' '.join(tag for tag in tag_seq)
+    #print(f"tags raw: {tags}")
+    #ONE TOKEN PER TAG VS. ONE TOKEN PER FEATURE
+    #uncomment this line for one token per tag (exp1, exp2)
+    #tags = tags.replace('+', '')
+    #uncomment this line for one token per feature (exp3, )
+    tags = tags.replace('+', ' ')
+
+    tags = clean_text(tags)
+    #print(f"tags cleaned: {tags}")
+    return tags
 
 
 def clean_text(text):
@@ -254,12 +275,10 @@ def tokenize_dataset(
             targets = ex[f"{trg_lang}_text"]
             targets = clean_text(targets)
             tags = ex[f'{src_lang} tags']
-            tags = ' '.join(tag for tag in tags)
-            tags = tags.replace('+', '')
-            tags = clean_text(tags)
-
+            tags = clean_tags(tags)
             model_inputs = text_tokenizer(inputs, text_target = targets, max_length=max_length, padding=False, truncation=True)
             model_tag_inputs = tag_tokenizer.encode(tags).ids[:max_length]
+            #print(f" len of tags tokenized: {len(model_tag_inputs)}")
             if len(model_inputs['input_ids'])>0 and len(model_inputs['labels'])>0 and len(model_tag_inputs)>0:
                 cleaned_data.append(
                     {
@@ -273,7 +292,35 @@ def tokenize_dataset(
     tokenized_dataset_dict = DatasetDict(tokenized_dict)
     return tokenized_dataset_dict
 
-
+def choose_highest_checkpoint(
+        parent_dir_path
+):
+    """
+    takes in a parent, parses the names of the child dirs, returns the one with the highest numbered checkpoint if present
+    """
+    subdirs = []
+    max_num = 0
+    highest_dir = ''
+    for entry in os.scandir(parent_dir_path):
+        if entry.is_dir():
+            #print(entry)
+            #print(entry.name)
+            subdirs.append(entry.name)
+    for dir in subdirs:
+        result = re.search(r"checkpoint-(\d+)", dir)
+        #print(result)
+        #print(result.group(1))
+        train_num = result.group(1)
+        if train_num is not None:
+            if int(train_num) > max_num:
+                max_num = int(train_num)
+                highest_dir = dir
+    if highest_dir != '':
+        res_path = f"{parent_dir_path}/{highest_dir}"
+        return res_path
+    else:
+        print('no checkpoint directories found')
+        return
 
 
 #deprecated
@@ -309,6 +356,7 @@ def gen_training_args(
 
 def training_pipeline(
         initial_checkpoint,
+        hub_checkpoint,
         src_lang,
         trg_lang,
         load_from_disk=False,
@@ -322,7 +370,8 @@ def training_pipeline(
         proportion_of_test_dataset=1.0,
         mid_training_eval_sent_num=128,
         batch_size=1,
-        expdir=''
+        expdir='',
+        
 ):
     now = datetime.now() - timedelta(hours=5, minutes=0) #accounting for timezone
     now = now.strftime(f"%Y-%m-%d_%H-%M")
@@ -332,13 +381,20 @@ def training_pipeline(
     src_nllb = utils.get_nllb_code(src_lang)
     trg_nllb = utils.get_nllb_code(trg_lang)
 
+
+
+
     #CREATE TOKENIZERS
     text_tokenizer = NllbTokenizer.from_pretrained(
-        initial_checkpoint,
+        hub_checkpoint,
         src_lang=src_nllb,
         tgt_lang=trg_nllb
-        )
-    tag_tokenizer = create_morph_tokenizer(src_lang=src_lang, trg_lang=trg_lang)
+    )
+    tag_tokenizer = create_morph_tokenizer(
+        src_lang=src_lang,
+        trg_lang=trg_lang,
+        expdir=expdir
+    )
     
     #PREPROCESS DATA
     dataset_dict = tokenize_dataset(
@@ -353,7 +409,7 @@ def training_pipeline(
         model = create_baseline_model()
         data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
     else:
-        model = create_model()
+        model = create_model(initial_checkpoint)
         data_collator = MorphModelDataCollator(text_tokenizer, model)
 
     cumulative_model_path_holder_filename = "./cumulative_model.txt"
@@ -411,7 +467,7 @@ def training_pipeline(
         load_best_model_at_end=True,
         metric_for_best_model='eval_bleu',
         greater_is_better=True,
-        save_total_limit=3,
+        save_total_limit=1,
         warmup_steps=10,
         #label_smoothing_factor=0.1
         #generation_config=generation_config
@@ -496,6 +552,9 @@ def main(
     print(f"cuda current device: {cuda.current_device()}")
     print(f"cuda current device name: {cuda.get_device_name(cuda.current_device())}")
 
+    hub_checkpoint = 'facebook/nllb-200-distilled-600M'
+
+
     #PARSE ARGUMENTS
     if(args.title):
         print(args.title)
@@ -505,16 +564,25 @@ def main(
     to_train = True if args.train else False
     to_eval = True if args.eval else False
     run_baseline = True if args.baseline else False
+    if(args.initchkpt):
+        initial_checkpoint = args.initchkpt
+        if args.choosehighchkpt:
+            initial_checkpoint = choose_highest_checkpoint(initial_checkpoint)
+    else:
+        initial_checkpoint = hub_checkpoint
+
+
+
 
     print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
 
 
     #oct 28 test
-    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
     run_langs = ['tt'] #just baseline plus experimental, not finetune
 
     training_pipeline(
         initial_checkpoint=initial_checkpoint,
+        hub_checkpoint=hub_checkpoint,
         src_lang=src_lang,
         trg_lang=trg_lang,
         run_baseline=run_baseline,
@@ -523,7 +591,7 @@ def main(
         proportion_of_train_dataset=1.0,
         proportion_of_test_dataset=1.0,
         batch_size=8,
-        expdir=expdir
+        expdir=expdir,
     )
     return
 
@@ -635,6 +703,12 @@ if __name__ == "__main__":
         help="directory for results of this experiment"
     )
     parser.add_argument(
+        "--initchkpt",
+        required=False,
+        type=str,
+        help="directory for the model to train off of, if none, will default to the nllb model on the hub"
+    )
+    parser.add_argument(
         "--train",
         action='store_true',
         #required=True,
@@ -657,6 +731,14 @@ if __name__ == "__main__":
         #default=False,
         #type=bool,
         help="whether to run the baseline NLLB-200-distilled-600M model (instead of the experimental version)"
+    )
+    parser.add_argument(
+        "--choosehighchkpt",
+        action='store_true',
+        #required=True,
+        #default=False,
+        #type=bool,
+        help="whether to choose the h"
     )
 
     main(parser.parse_args())

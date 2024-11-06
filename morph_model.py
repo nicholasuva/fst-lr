@@ -268,7 +268,7 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             )
             combined_encoder_outputs = cat((encoder_outputs.last_hidden_state, morph_encoder_outputs.last_hidden_state), dim=-1)
             projected_encoder_outputs = self.projection_layer(combined_encoder_outputs)
-            assert encoder_outputs.last_hidden_state.shape == morph_encoder_outputs.last_hidden_state.shape == projected_encoder_outputs.shape
+            #assert encoder_outputs.last_hidden_state.shape == morph_encoder_outputs.last_hidden_state.shape == projected_encoder_outputs.shape
             encoder_outputs = BaseModelOutput(
                 last_hidden_state=projected_encoder_outputs,
                 #hidden_states=projected_encoder_outputs[1] if len(projected_encoder_outputs) > 1 else None,
