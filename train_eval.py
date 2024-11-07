@@ -18,7 +18,7 @@ from peft import get_peft_model, LoraConfig, TaskType
 from tqdm.auto import tqdm
 #from morph_tokenizer import create_morph_tokenizer
 
-from morph_model import MorphM2M100, MorphModelDataCollator, DebugTrainer
+from morph_model import MorphM2M100, MorphModelDataCollator
 
 import json
 import argparse
@@ -125,24 +125,18 @@ def compute_metrics(
     return results
 
 #in use
-def create_model(
+def create_MorphM2M_model(
         initial_checkpoint
 ):
-    print(f'creating model from initial checkpoint: {initial_checkpoint}')
+    """
+    initialize a MorphM2M model by loading a M2M100 model and modifying it to add a second encoder
+    """
+    print(f'creating MorphM2M model from initial checkpoint: {initial_checkpoint}')
     #initial_checkpoint = 'facebook/nllb-200-distilled-600M'
-    morph_encoder_config = M2M100Config(
-        vocab_size=1024,
-        encoder_layers=2,
-        d_model=512,
-        dropout=0.2,
-        encoder_layerdrop=0,
-        pad_token_id=0,
-        max_position_embeddings=1024,
-        scale_embedding=True,
-    )
+   
     #text_tokenizer = xxxxx
     #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
-    model = MorphM2M100(initial_checkpoint, morph_encoder_config)
+    model = MorphM2M100(initial_checkpoint)
     if False:
         peft_config = LoraConfig(
             task_type=TaskType.SEQ_2_SEQ_LM,
@@ -154,20 +148,35 @@ def create_model(
     print('model created')
     return model
 
-
+def load_MorphM2M_model(
+    initial_checkpoint
+):
+    """
+    load a MorphM2M dual encoder model from a local checkpoint
+    """
+    #can I just inherit from_pretrained? let's see
+    model = MorphM2M100.from_pretrained(initial_checkpoint)
+    return model
 
 
 #in use
-def create_baseline_model():
-    print('creating model')
-    initial_checkpoint = 'facebook/nllb-200-distilled-600M'
+def load_M2M100_model(
+        initial_checkpoint
+):
+    """
+    load a M2M100 model from a local or hub checkpoint
+
+    """
+    print(f'loading M2M100 model from checkpoint: {initial_checkpoint}')
+    #initial_checkpoint = 'facebook/nllb-200-distilled-600M'
     #text_tokenizer = xxxxx
     #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
     #model = MorphM2M100(config)
     model = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint)
     config_dict = model.config.to_dict()
-    del config_dict['max_length']
-    model.config = PretrainedConfig.from_dict(config_dict)
+    if 'max_length' in config_dict:
+        del config_dict['max_length']
+        model.config = PretrainedConfig.from_dict(config_dict)
     model.generation_config.max_length=200
     #model = M2M100ForConditionalGeneration(config)
     if False:
@@ -178,7 +187,7 @@ def create_baseline_model():
             )
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
-    print('model created')
+    print(f'model created, model type: {type(model)}')
     return model
 
 def create_morph_tokenizer(
@@ -406,10 +415,10 @@ def training_pipeline(
     
     #CREATE MODEL AND DATA COLLATOR (need to add ability to load a model)
     if run_baseline:
-        model = create_baseline_model()
+        model = load_M2M100_model()
         data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
     else:
-        model = create_model(initial_checkpoint)
+        model = create_MorphM2M_model(initial_checkpoint)
         data_collator = MorphModelDataCollator(text_tokenizer, model)
 
     cumulative_model_path_holder_filename = "./cumulative_model.txt"
@@ -739,6 +748,14 @@ if __name__ == "__main__":
         #default=False,
         #type=bool,
         help="whether to choose the h"
+    )
+    parser.add_argument(
+        "--createmorph",
+        action='store_true',
+        #required=True,
+        #default=False,
+        #type=bool,
+        help="whether to create a morphm2m model from an unmodified model"
     )
 
     main(parser.parse_args())
