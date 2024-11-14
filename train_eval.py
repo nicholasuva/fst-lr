@@ -176,7 +176,7 @@ def load_M2M100_model(
     config_dict = model.config.to_dict()
     if 'max_length' in config_dict:
         del config_dict['max_length']
-        model.config = PretrainedConfig.from_dict(config_dict)
+        model.config = M2M100Config.from_dict(config_dict)
     model.generation_config.max_length=200
     #model = M2M100ForConditionalGeneration(config)
     if False:
@@ -373,6 +373,8 @@ def training_pipeline(
         save_model=True,
         save_to_cumulative=True,
         run_baseline=False,
+        load_morph=False,
+        create_morph=False,
         to_train=True,
         to_eval=True,
         proportion_of_train_dataset=1.0,
@@ -385,7 +387,9 @@ def training_pipeline(
     now = datetime.now() - timedelta(hours=5, minutes=0) #accounting for timezone
     now = now.strftime(f"%Y-%m-%d_%H-%M")
     model_mode = 'baseline' if run_baseline else 'experimental'
-    all_logs_filepath = f"{expdir}/{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}_{now}"
+    #all_logs_filepath = f"{expdir}/{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}_{now}"
+    #I don't want to have datetime in the filename anymore, it makes searching for the files harder
+    all_logs_filepath = f"{expdir}/{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}"
     #train_results_filepath = f"./{all_logs_filepath}/train_results"
     src_nllb = utils.get_nllb_code(src_lang)
     trg_nllb = utils.get_nllb_code(trg_lang)
@@ -415,10 +419,13 @@ def training_pipeline(
     
     #CREATE MODEL AND DATA COLLATOR (need to add ability to load a model)
     if run_baseline:
-        model = load_M2M100_model()
+        model = load_M2M100_model(initial_checkpoint)
         data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
     else:
-        model = create_MorphM2M_model(initial_checkpoint)
+        if create_morph:
+            model = create_MorphM2M_model(initial_checkpoint)
+        elif load_morph:
+            model = load_MorphM2M_model(initial_checkpoint)
         data_collator = MorphModelDataCollator(text_tokenizer, model)
 
     cumulative_model_path_holder_filename = "./cumulative_model.txt"
@@ -573,6 +580,8 @@ def main(
     to_train = True if args.train else False
     to_eval = True if args.eval else False
     run_baseline = True if args.baseline else False
+    create_morph = True if args.createmorph else False
+    load_morph = True if args.loadmorph else False
     if(args.initchkpt):
         initial_checkpoint = args.initchkpt
         if args.choosehighchkpt:
@@ -586,8 +595,6 @@ def main(
     print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
 
 
-    #oct 28 test
-    run_langs = ['tt'] #just baseline plus experimental, not finetune
 
     training_pipeline(
         initial_checkpoint=initial_checkpoint,
@@ -595,6 +602,8 @@ def main(
         src_lang=src_lang,
         trg_lang=trg_lang,
         run_baseline=run_baseline,
+        create_morph=create_morph,
+        load_morph=load_morph,
         to_train=to_train,
         to_eval=to_eval,
         proportion_of_train_dataset=1.0,
@@ -751,6 +760,14 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--createmorph",
+        action='store_true',
+        #required=True,
+        #default=False,
+        #type=bool,
+        help="whether to create a morphm2m model from an unmodified model"
+    )
+    parser.add_argument(
+        "--loadmorph",
         action='store_true',
         #required=True,
         #default=False,
