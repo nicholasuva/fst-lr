@@ -1,11 +1,10 @@
 #taking inspiration from this notebook
 #https://github.com/huggingface/notebooks/blob/main/examples/translation.ipynb
-#test test test
+
 from transformers import PretrainedConfig, GenerationConfig, TrainerCallback, Seq2SeqTrainer, Seq2SeqTrainingArguments, T5Tokenizer, T5ForConditionalGeneration, DataCollatorForSeq2Seq, AutoModelForSeq2SeqLM, AutoTokenizer, M2M100ForConditionalGeneration, M2M100Config, M2M100Tokenizer, NllbTokenizer, get_scheduler, Adafactor
 from datasets import Dataset, DatasetDict, load_from_disk, load_metric
 from typing import Callable
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders, processors
-
 from torch import cuda, Generator, no_grad, bfloat16, float16
 import torch
 from torch.nn.utils import clip_grad_norm_
@@ -16,8 +15,6 @@ import numpy as np
 import utils
 from peft import get_peft_model, LoraConfig, TaskType
 from tqdm.auto import tqdm
-#from morph_tokenizer import create_morph_tokenizer
-
 from morph_model import MorphM2M100, MorphModelDataCollator
 
 import json
@@ -28,11 +25,13 @@ from datetime import datetime, timedelta
 import os
 import re
 import faulthandler
+import wandb
+import optuna
+from optuna.integration.wandb import WeightsAndBiasesCallback
 
 faulthandler.enable()
 #import function_trace
-#some stuff that will be used everywhere perhaps
-#model_checkpoint = 'jbochi/madlad400-3b-mt'
+
 
 #trying gpu version override
 HSA_OVERRIDE_GFX_VERSION=1030
@@ -40,11 +39,6 @@ HSA_OVERRIDE_GFX_VERSION=1030
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-#torch.autograd.set_detect_anomaly(True)
-
-#class GradientClippingCallback(TrainerCallback):
-    #def on_step_end(self, args, state, control, **kwargs):
-        #torch.nn.utils.clip_grad_norm_(self.model.parameters())
 
 
 class GradientClippingCallback(TrainerCallback):
@@ -332,37 +326,6 @@ def choose_highest_checkpoint(
         return
 
 
-#deprecated
-def gen_training_args(
-        log_filepath,
-        batch_size=1
-):
-    training_args = Seq2SeqTrainingArguments(
-        #output_dir='./tt-en-init-test_results',
-        output_dir=f"./{log_filepath}/training_results/",
-        logging_dir=f"./{log_filepath}/training_logs/",
-        fp16=True,
-        eval_strategy='steps', #'no', 'steps', or 'epoch'
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        #learning_rate=5e-5,
-        weight_decay=0.01,
-        #logging_dir='./test_logs',
-        logging_steps=500,
-        save_steps=500,
-        num_train_epochs=3,
-        predict_with_generate=True,
-        load_best_model_at_end=True,
-        metric_for_best_model='eval_bleu',
-        greater_is_better=True,
-        save_total_limit=3,
-        warmup_steps=10,
-
-        #label_smoothing_factor=0.1
-    )
-    return training_args
-
-
 def training_pipeline(
         initial_checkpoint,
         hub_checkpoint,
@@ -555,6 +518,29 @@ def training_pipeline(
     del optimizer
     del dataset_dict
     torch.cuda.empty_cache()
+
+    return
+
+def hyperparameter_search(trial):
+    """
+    this is going to be roughly equivalent to training_pipeline but for hyperparam tuning
+    """
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    batch_size = trial.suggest_categorical("batch_size", [8, 16, 32])
+    num_train_epochs = trial.suggest_int("num_train_epochs", 3, 10)
+
+    #copy training args from uhhhhhh pipeline?
+    #then basically I want to do what pipeline does, train, eval, then get the bleu out of the eval and return the negative of the bleu,
+    #because the optuna minimizes by default
+    return
+
+
+def wandb_sweep():
+    wandb.init(project="some_test_proj_name")
+    wandb_callback = WeightsAndBiasesCallback()
+    study = optuna.create_study(direction="something")
+    study.optimize(hyperparameter_search, some other variables)
+
 
     return
 
@@ -778,12 +764,3 @@ if __name__ == "__main__":
     main(parser.parse_args())
 
 
-"""
-what args do I need
-src lang
-trg lang
-to train
-to eval
-baseline or experimental
-other exp parameters like idk, save and load cumulative, adjust lr, that kind of thing
-"""
