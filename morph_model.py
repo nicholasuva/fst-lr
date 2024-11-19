@@ -16,6 +16,9 @@ class MorphM2M100(M2M100ForConditionalGeneration):
     def __init__(
         self,
         checkpoint,
+        morph_encoder_layers=2,
+        morph_d_model=512,
+        morph_dropout=0.2,
         #morph_encoder_config,
         freeze_base_encoder=True,
         encoder_scheme="embed_dim",
@@ -46,13 +49,14 @@ class MorphM2M100(M2M100ForConditionalGeneration):
             self.generation_config.max_length=200
             self.model = source_model.model
             self.lm_head = source_model.lm_head
+            del source_model
             
             #create new encoder for morph tags from config
             morph_encoder_config = M2M100Config(
             vocab_size=1024,
-            encoder_layers=2,
-            d_model=512,
-            dropout=0.2,
+            encoder_layers=morph_encoder_layers,
+            d_model=morph_d_model,
+            dropout=morph_dropout,
             encoder_layerdrop=0,
             pad_token_id=0,
             max_position_embeddings=1024,

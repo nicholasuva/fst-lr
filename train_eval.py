@@ -16,12 +16,14 @@ import utils
 from peft import get_peft_model, LoraConfig, TaskType
 from tqdm.auto import tqdm
 from morph_model import MorphM2M100, MorphModelDataCollator
-
+import gc
+import tracemalloc
+import shutil
 import json
 import argparse
 import evaluate
 import logging
-from datetime import datetime, timedelta
+#from datetime import datetime, timedelta
 import os
 import re
 import faulthandler
@@ -30,6 +32,8 @@ import optuna
 from optuna.integration.wandb import WeightsAndBiasesCallback
 
 faulthandler.enable()
+tracemalloc.start()
+#gc.set_debug(gc.DEBUG_STATS | gc.DEBUG_LEAK)
 #import function_trace
 
 
@@ -120,7 +124,10 @@ def compute_metrics(
 
 #in use
 def create_MorphM2M_model(
-        initial_checkpoint
+        initial_checkpoint,
+        morph_encoder_layers=2,
+        morph_d_model=512,
+        morph_dropout=0.2,
 ):
     """
     initialize a MorphM2M model by loading a M2M100 model and modifying it to add a second encoder
@@ -130,7 +137,12 @@ def create_MorphM2M_model(
    
     #text_tokenizer = xxxxx
     #config = M2M100ForConditionalGeneration.from_pretrained(initial_checkpoint).config
-    model = MorphM2M100(initial_checkpoint)
+    model = MorphM2M100(
+        initial_checkpoint,
+        morph_encoder_layers=morph_encoder_layers,
+        morph_d_model=morph_d_model,
+        morph_dropout=morph_dropout,
+    )
     if False:
         peft_config = LoraConfig(
             task_type=TaskType.SEQ_2_SEQ_LM,
@@ -204,7 +216,10 @@ def create_morph_tokenizer(
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     trainer = trainers.WordLevelTrainer(special_tokens=['[UNK]', '[PAD]', '[CLS]', '[SEP]'])
     tokenizer.train_from_iterator(data, trainer)
-    tokenizer.save(f'./{expdir}/tokenizers/{src_lang}_morph_tag_tokenizer.json')
+    tokenizers_path = f'./{expdir}/tokenizers'
+    if not os.path.exists(tokenizers_path):
+        os.makedirs(tokenizers_path)
+    tokenizer.save(f'{tokenizers_path}/{src_lang}_morph_tag_tokenizer.json')
     #test_sent = data[0]
     #encoded = tokenizer.encode(test_sent)
     #print(encoded.tokens)
@@ -331,8 +346,6 @@ def training_pipeline(
         hub_checkpoint,
         src_lang,
         trg_lang,
-        load_from_disk=False,
-        model_disk_filepath=None,
         save_model=True,
         save_to_cumulative=True,
         run_baseline=False,
@@ -344,34 +357,41 @@ def training_pipeline(
         proportion_of_test_dataset=1.0,
         mid_training_eval_sent_num=128,
         batch_size=1,
+        learning_rate=3e-5,
+        num_train_epochs=3,
+        weight_decay=0.01,
+        morph_dropout=None,
+        morph_encoder_layers=None,
+        morph_d_model=None,
         expdir='',
-        
+        save_strategy='epoch',
+        evaluation_strategy='epoch',
+        is_wandb_sweep=False,
+        report_to='tensorboard'  
 ):
-    now = datetime.now() - timedelta(hours=5, minutes=0) #accounting for timezone
-    now = now.strftime(f"%Y-%m-%d_%H-%M")
+    #INITIAL FILEPATH VALUES
     model_mode = 'baseline' if run_baseline else 'experimental'
-    #all_logs_filepath = f"{expdir}/{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}_{now}"
-    #I don't want to have datetime in the filename anymore, it makes searching for the files harder
-    all_logs_filepath = f"{expdir}/{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}"
-    #train_results_filepath = f"./{all_logs_filepath}/train_results"
-    src_nllb = utils.get_nllb_code(src_lang)
-    trg_nllb = utils.get_nllb_code(trg_lang)
-
-
-
+    cumulative_model_path_holder_filename = "./cumulative_model.txt"
+    all_logs_filepath = f"./{expdir}/{src_lang}-{trg_lang}_mode-{model_mode}_train-{str(to_train)}_eval-{str(to_eval)}"
+    if not os.path.exists(all_logs_filepath):
+        os.makedirs(all_logs_filepath)
 
     #CREATE TOKENIZERS
+    src_nllb = utils.get_nllb_code(src_lang)
+    trg_nllb = utils.get_nllb_code(trg_lang)
     text_tokenizer = NllbTokenizer.from_pretrained(
         hub_checkpoint,
         src_lang=src_nllb,
         tgt_lang=trg_nllb
     )
+    trg_lang_nllb_id = text_tokenizer.convert_tokens_to_ids(trg_nllb)
     tag_tokenizer = create_morph_tokenizer(
         src_lang=src_lang,
         trg_lang=trg_lang,
         expdir=expdir
     )
     
+
     #PREPROCESS DATA
     dataset_dict = tokenize_dataset(
         text_tokenizer=text_tokenizer,
@@ -380,32 +400,47 @@ def training_pipeline(
         trg_lang=trg_lang
         )
     
-    #CREATE MODEL AND DATA COLLATOR (need to add ability to load a model)
+
+    #CREATE MODEL AND DATA COLLATOR
     if run_baseline:
         model = load_M2M100_model(initial_checkpoint)
         data_collator = DataCollatorForSeq2Seq(text_tokenizer, model)
     else:
         if create_morph:
-            model = create_MorphM2M_model(initial_checkpoint)
+            if morph_dropout is not None and morph_encoder_layers is not None and morph_d_model is not None:
+                model= create_MorphM2M_model(
+                    initial_checkpoint,
+                    morph_dropout=morph_dropout,
+                    morph_encoder_layers=morph_encoder_layers,
+                    morph_d_model=morph_d_model
+                )
+                assert model.morph_encoder.config.dropout == morph_dropout
+                assert model.morph_encoder.config.encoder_layers == morph_encoder_layers
+                assert model.morph_encoder.config.d_model == morph_d_model
+            else:
+                model = create_MorphM2M_model(initial_checkpoint)
         elif load_morph:
             model = load_MorphM2M_model(initial_checkpoint)
         data_collator = MorphModelDataCollator(text_tokenizer, model)
-
-    cumulative_model_path_holder_filename = "./cumulative_model.txt"
-    trg_lang_nllb_code = utils.get_nllb_code(trg_lang)
-    trg_lang_nllb_id = text_tokenizer.convert_tokens_to_ids(trg_lang_nllb_code)
     
+
     #LOAD OPTIMIZER
     optimizer = AdamW(
         model.parameters(),
-        lr=3e-5
+        lr=learning_rate
     )
 
+
     #PROPORTION OUT DATASETS
-    if proportion_of_train_dataset>=1.0:
-        train_dataset = dataset_dict['train']
+    if is_wandb_sweep:
+        train_dataset=dataset_dict['dev']
+        if len(train_dataset) > 500:
+            train_dataset = train_dataset.select(range(500))
     else:
-        train_dataset = dataset_dict['train'].train_test_split(test_size=proportion_of_train_dataset)['test']
+        train_dataset=dataset_dict['train']
+
+    if proportion_of_train_dataset<1.0:
+        train_dataset = train_dataset.train_test_split(test_size=proportion_of_train_dataset)['test']
     mid_training_eval_proportion = mid_training_eval_sent_num / len(dataset_dict['test'])
     if mid_training_eval_proportion >= 1.0:
         mid_training_eval_set = dataset_dict['test']
@@ -417,39 +452,39 @@ def training_pipeline(
     else:
         test_dataset = dataset_dict['test'].train_test_split(test_size=proportion_of_test_dataset)['test']
 
+
     #SOME OPTIMIZATIONS
-    #torch.autograd.set_detect_anomaly(True)
     torch.cuda.synchronize()
+    #torch.autograd.set_detect_anomaly(True)
     #model.gradient_checkpointing_enable()
 
-    #GENERATE TRAINING ARGUMENTS
-    #generation_config = GenerationConfig(
-        #max_length=200,
-        #forced_bos_token_id=trg_lang_nllb_id
-    #)
 
+    #CREATE TRAINING ARGUMENTS
+    if is_wandb_sweep:
+        output_dir = f"./wandb_sweep_tmp/"
+        load_best_model_at_end=False
+    else:
+        output_dir = f"./{all_logs_filepath}/training_results/"
+        load_best_model_at_end=True
     training_args = Seq2SeqTrainingArguments(
-        #output_dir='./tt-en-init-test_results',
-        output_dir=f"./{all_logs_filepath}/training_results/",
+        output_dir=output_dir,
         logging_dir=f"./{all_logs_filepath}/training_logs/",
         fp16=True,
-        eval_strategy='steps', #'no', 'steps', or 'epoch'
+        eval_strategy=evaluation_strategy, #'no', 'steps', or 'epoch'
+        save_strategy=save_strategy,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
-        #learning_rate=5e-5,
-        weight_decay=0.01,
-        #logging_dir='./test_logs',
+        weight_decay=weight_decay,
         logging_steps=500,
         save_steps=500,
-        num_train_epochs=3,
+        num_train_epochs=num_train_epochs,
         predict_with_generate=True,
-        load_best_model_at_end=True,
+        load_best_model_at_end=load_best_model_at_end,
         metric_for_best_model='eval_bleu',
         greater_is_better=True,
         save_total_limit=1,
         warmup_steps=10,
-        #label_smoothing_factor=0.1
-        #generation_config=generation_config
+        report_to=report_to
     )
 
 
@@ -470,7 +505,7 @@ def training_pipeline(
         )
         #does train return anything? I just added the output
         results = training_trainer.train()
-        best_model_dir = training_trainer.state.best_model_checkpoint
+        #best_model_dir = training_trainer.state.best_model_checkpoint
 
         #TRAINING CLEANUP
         del training_trainer
@@ -484,21 +519,18 @@ def training_pipeline(
         eval_trainer = Seq2SeqTrainer(
             model=model,
             args=training_args,
-            #train_dataset=train_dataset,
             eval_dataset=test_dataset,
             data_collator=data_collator,
             compute_metrics=compute_metrics,
             optimizers=(optimizer, None),
         )
-        results = eval_trainer.evaluate(forced_bos_token_id=trg_lang_nllb_id)
-        #results = trainer.evaluate()
+        with torch.no_grad():
+            results = eval_trainer.evaluate(forced_bos_token_id=trg_lang_nllb_id)
         print(f"results: {results}")
         eval_results_filepath = f"./{all_logs_filepath}/evaluation_results.json"
         with open(eval_results_filepath, 'w') as sink:
             json.dump(results, sink, indent=2)
-        #with open('fi-en-morph-embed-dim-cat-first_try_model_results.txt', 'a') as sink:
-            #sink.write(str(results))
-        best_model_dir = eval_trainer.state.best_model_checkpoint
+        #best_model_dir = eval_trainer.state.best_model_checkpoint
 
         #EVAL CLEANUP
         del eval_trainer
@@ -506,42 +538,119 @@ def training_pipeline(
 
 
     #this should only be the case if it's not baseline, will do once I combine these functions
-    if save_model:
-        if save_to_cumulative:
+    #if save_model:
+        #if save_to_cumulative:
             #need to fix, why is this returning None?
-            if best_model_dir is not None:
-                with open(cumulative_model_path_holder_filename, 'w') as sink:
-                    sink.write(best_model_dir)
+            #if best_model_dir is not None:
+                #with open(cumulative_model_path_holder_filename, 'w') as sink:
+                    #sink.write(best_model_dir)
 
     #OVERALL CLEANUP
     del model
     del optimizer
     del dataset_dict
+    del data_collator
+    del text_tokenizer
+    del tag_tokenizer
+    gc.collect()
+    print(f"gc.garbage: {gc.garbage}")
     torch.cuda.empty_cache()
+    if is_wandb_sweep and os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
 
-    return
+    if results is not None:
+        return results
+    else:
+        return
 
-def hyperparameter_search(trial):
-    """
-    this is going to be roughly equivalent to training_pipeline but for hyperparam tuning
-    """
-    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [8, 16, 32])
-    num_train_epochs = trial.suggest_int("num_train_epochs", 3, 10)
-
-    #copy training args from uhhhhhh pipeline?
-    #then basically I want to do what pipeline does, train, eval, then get the bleu out of the eval and return the negative of the bleu,
-    #because the optuna minimizes by default
-    return
-
-
-def wandb_sweep():
-    wandb.init(project="some_test_proj_name")
+#DEPRECATED
+def wandb_sweep(
+    initial_checkpoint,
+    hub_checkpoint,
+    src_lang,
+    trg_lang,
+    lr_min=1e-5,
+    lr_max=1e-3,
+    batch_sizes=[4, 8, 16],
+    epochs_min=3,
+    epochs_max=10,
+    n_trials=20,
+    expdir=""
+):
+    wandb.init(project=f"{src_lang}-{trg_lang}-hyperparameter_tuning")
+    def hyperparameter_search(trial):
+        """
+        this is going to be roughly equivalent to training_pipeline but for hyperparam tuning
+        """
+        learning_rate = trial.suggest_float("learning_rate", lr_min, lr_max, log=True)
+        batch_size = trial.suggest_categorical("batch_size", batch_sizes)
+        num_train_epochs = trial.suggest_int("num_train_epochs", epochs_min, epochs_max)
+        print(f"learning rate: {learning_rate}\tbatch size: {batch_size}\tnum train epochs: {num_train_epochs}")
+        #copy training args from uhhhhhh pipeline?
+        #wait a second maybe I can actually just call training pipeline looool
+        try:
+            snapshot_before_train = tracemalloc.take_snapshot()
+            print("before train")
+            #print(f" gc objects: {gc.get_objects()}")
+            #for stat in snapshot_before_train[:10]:
+                #print(stat)
+            results = training_pipeline(
+                initial_checkpoint,
+                hub_checkpoint,
+                src_lang,
+                trg_lang,
+                save_model=False,
+                save_to_cumulative=False,
+                run_baseline=False,
+                load_morph=False,
+                create_morph=True,
+                to_train=True,
+                to_eval=True,
+                proportion_of_train_dataset=1.0,
+                proportion_of_test_dataset=1.0,
+                mid_training_eval_sent_num=128,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                num_train_epochs=num_train_epochs,
+                expdir=expdir,
+                save_strategy='no',
+                evaluation_strategy='no',
+                is_wandb_sweep=True,
+                report_to='wandb'
+            )
+            snapshot_after_train = tracemalloc.take_snapshot()
+            print("after train")
+            #print(f" gc objects: {gc.get_objects()}")
+            #for stat in snapshot_after_train[:10]:
+                #print(stat)
+            #top_diffs = snapshot_after_train.compare_to(snapshot_before_train,'lineno')
+            #print("memory differences before and after training pipeline:")
+            #for stat in top_diffs[:10]:
+                #print(stat)
+            wandb.log({
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "num_train_epochs": num_train_epochs,
+                "eval_bleu": results['eval_bleu']
+                })
+            #then basically I want to do what pipeline does, train, eval, then get the bleu out of the eval and return the negative of the bleu,
+            #because the optuna minimizes by default
+            return (-1 * results['eval_bleu'])
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                wandb.log({
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "num_train_epochs": num_train_epochs,
+                "Out of Memory Error": True
+                })
+                return float("inf")
+            else:
+                raise
     wandb_callback = WeightsAndBiasesCallback()
-    study = optuna.create_study(direction="something")
-    study.optimize(hyperparameter_search, some other variables)
-
-
+    study = optuna.create_study(direction="minimize")
+    study.optimize(hyperparameter_search, n_trials=n_trials, callbacks=[wandb_callback])
+    wandb.log(study.best_params)
     return
 
 def main(
@@ -554,6 +663,8 @@ def main(
     print(f"cuda current device: {cuda.current_device()}")
     print(f"cuda current device name: {cuda.get_device_name(cuda.current_device())}")
 
+
+    #INITIAL FILEPATH VALUES
     hub_checkpoint = 'facebook/nllb-200-distilled-600M'
 
 
@@ -563,121 +674,116 @@ def main(
     src_lang = args.src
     trg_lang = args.trg
     expdir = args.expdir
+    if not os.path.exists(f"./{expdir}"):
+        os.makedirs(f"./{expdir}")
     to_train = True if args.train else False
     to_eval = True if args.eval else False
     run_baseline = True if args.baseline else False
     create_morph = True if args.createmorph else False
     load_morph = True if args.loadmorph else False
+    is_wandb_sweep = True if args.wandbsweep else False
     if(args.initchkpt):
         initial_checkpoint = args.initchkpt
         if args.choosehighchkpt:
             initial_checkpoint = choose_highest_checkpoint(initial_checkpoint)
     else:
         initial_checkpoint = hub_checkpoint
-
-
-
-
-    print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
-
-
-
-    training_pipeline(
-        initial_checkpoint=initial_checkpoint,
-        hub_checkpoint=hub_checkpoint,
-        src_lang=src_lang,
-        trg_lang=trg_lang,
-        run_baseline=run_baseline,
-        create_morph=create_morph,
-        load_morph=load_morph,
-        to_train=to_train,
-        to_eval=to_eval,
-        proportion_of_train_dataset=1.0,
-        proportion_of_test_dataset=1.0,
-        batch_size=8,
-        expdir=expdir,
-    )
-    return
-
+    if(args.learningrate):
+        learning_rate = args.learningrate
+    if(args.batchsize):
+        batch_size = args.batchsize
+    if(args.numtrainepochs):
+        num_train_epochs = args.numtrainepochs
+    if(args.weightdecay):
+        weight_decay = args.weightdecay
+    if(args.dropout):
+        morph_dropout = args.dropout
+    if(args.encoderlayers):
+        morph_encoder_layers = args.encoderlayers
+    if(args.dmodel):
+        morph_d_model = args.dmodel
 
     
-    these_src = ['so', 'ba', 'fo', 'ga']
-    this_trg = 'en'
-    for this_src in these_src:
-        print(this_src)
-        """
-        print('baseline')
+    if is_wandb_sweep:
+    #RUN A SINGLE TEST FROM THE WANDB HYPERPARAMETER SEARCH SWEEP
+        #EXPERIMENTAL MODEL SWEEP
+        if create_morph:
+            results = training_pipeline(
+                initial_checkpoint=initial_checkpoint,
+                hub_checkpoint=hub_checkpoint,
+                src_lang=src_lang,
+                trg_lang=trg_lang,
+                save_model=False,
+                save_to_cumulative=False,
+                run_baseline=False,
+                load_morph=False,
+                create_morph=True,
+                to_train=True,
+                to_eval=True,
+                proportion_of_train_dataset=1.0,
+                proportion_of_test_dataset=1.0,
+                mid_training_eval_sent_num=128,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                num_train_epochs=num_train_epochs,
+                weight_decay=weight_decay,
+                morph_dropout=morph_dropout,
+                morph_encoder_layers=morph_encoder_layers,
+                morph_d_model=morph_d_model,
+                expdir=expdir,
+                save_strategy='no',
+                evaluation_strategy='no',
+                is_wandb_sweep=True,
+                report_to='wandb'
+            )
+        #BASELINE FINETUNE SWEEP
+        elif run_baseline:
+            results = training_pipeline(
+                initial_checkpoint=initial_checkpoint,
+                hub_checkpoint=hub_checkpoint,
+                src_lang=src_lang,
+                trg_lang=trg_lang,
+                save_model=False,
+                save_to_cumulative=False,
+                run_baseline=True,
+                load_morph=False,
+                create_morph=False,
+                to_train=True,
+                to_eval=True,
+                proportion_of_train_dataset=1.0,
+                proportion_of_test_dataset=1.0,
+                mid_training_eval_sent_num=128,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                num_train_epochs=num_train_epochs,
+                weight_decay=weight_decay,
+                expdir=expdir,
+                save_strategy='no',
+                evaluation_strategy='no',
+                is_wandb_sweep=True,
+                report_to='wandb'
+            )
+        print(f"EVAL_BLEU_RESULT: {results['eval_bleu']}")
+    else:
+        #RUN TRAINING AND/OR EVALUATION
+        print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
         training_pipeline(
             initial_checkpoint=initial_checkpoint,
-            src_lang=this_src,
-            trg_lang=this_trg,
-            run_baseline=True,
-            to_train=False,
-            to_eval=True,
-            proportion_of_train_dataset=1.0,
-            proportion_of_test_dataset=1.0
-        )
-        """
-        print('Baseline')
-        training_pipeline(
-            initial_checkpoint=initial_checkpoint,
-            src_lang=this_src,
-            trg_lang=this_trg,
-            run_baseline=True,
-            to_train=False,
-            to_eval=True,
+            hub_checkpoint=hub_checkpoint,
+            src_lang=src_lang,
+            trg_lang=trg_lang,
+            run_baseline=run_baseline,
+            create_morph=create_morph,
+            load_morph=load_morph,
+            to_train=to_train,
+            to_eval=to_eval,
             proportion_of_train_dataset=1.0,
             proportion_of_test_dataset=1.0,
-            batch_size=8
-        )
-        print('Finetune')
-        training_pipeline(
-            initial_checkpoint=initial_checkpoint,
-            src_lang=this_src,
-            trg_lang=this_trg,
-            run_baseline=True,
-            to_train=True,
-            to_eval=True,
-            proportion_of_train_dataset=1.0,
-            proportion_of_test_dataset=1.0,
-            batch_size=8
-        )
-        print('experimental')
-        training_pipeline(
-            initial_checkpoint=initial_checkpoint,
-            src_lang=this_src,
-            trg_lang=this_trg,
-            run_baseline=False,
-            to_train=True,
-            to_eval=True,
-            proportion_of_train_dataset=1.0,
-            proportion_of_test_dataset=1.0,
-            batch_size=8
+            batch_size=8,
+            expdir=expdir,
         )
     return
-    print('finetune')
-    training_pipeline(
-        initial_checkpoint=initial_checkpoint,
-        src_lang=this_src,
-        trg_lang=this_trg,
-        run_baseline=True,
-        to_train=True,
-        to_eval=True,
-        proportion_of_train_dataset=1.0,
-        proportion_of_test_dataset=1.0
-    )
-    print('experimental')
-    training_pipeline(
-        initial_checkpoint=initial_checkpoint,
-        src_lang=this_src,
-        trg_lang=this_trg,
-        run_baseline=False,
-        to_train=True,
-        to_eval=True,
-        proportion_of_train_dataset=1.0,
-        proportion_of_test_dataset=1.0
-    )
-    return
+
 
 
 if __name__ == "__main__":
@@ -715,50 +821,79 @@ if __name__ == "__main__":
     parser.add_argument(
         "--train",
         action='store_true',
-        #required=True,
-        #default=True,
-        #type=bool,
         help="whether to train the model"
     )
     parser.add_argument(
         "--eval",
         action='store_true',
-        #required=True,
-        #default=True,
-        #type=bool,
         help="whether to evaluate the model"
     )
     parser.add_argument(
         "--baseline",
         action='store_true',
-        #required=True,
-        #default=False,
-        #type=bool,
         help="whether to run the baseline NLLB-200-distilled-600M model (instead of the experimental version)"
     )
     parser.add_argument(
         "--choosehighchkpt",
         action='store_true',
-        #required=True,
-        #default=False,
-        #type=bool,
         help="whether to choose the h"
     )
     parser.add_argument(
         "--createmorph",
         action='store_true',
-        #required=True,
-        #default=False,
-        #type=bool,
         help="whether to create a morphm2m model from an unmodified model"
     )
     parser.add_argument(
         "--loadmorph",
         action='store_true',
-        #required=True,
-        #default=False,
-        #type=bool,
         help="whether to create a morphm2m model from an unmodified model"
+    )
+    parser.add_argument(
+        "--wandbsweep",
+        action='store_true',
+        help="whether to perform a wandb sweep for the language pair"
+    )
+    parser.add_argument(
+        "--learningrate",
+        type=float,
+        #action='store_true',
+        help="learning rate for training"
+    )
+    parser.add_argument(
+        "--batchsize",
+        type=int,
+        #action='store_true',
+        help="batch size for training"
+    )
+    parser.add_argument(
+        "--numtrainepochs",
+        type=int,
+        #action='store_true',
+        help="number of epochs for training"
+    )
+    parser.add_argument(
+        "--weightdecay",
+        type=float,
+        #action='store_true',
+        help="weight decay for training"
+    )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        #action='store_true',
+        help="dropout for morph encoder"
+    )
+    parser.add_argument(
+        "--encoderlayers",
+        type=int,
+        #action='store_true',
+        help="num layers for morph encoder"
+    )
+    parser.add_argument(
+        "--dmodel",
+        type=int,
+        #action='store_true',
+        help="model dimension for morph encoder"
     )
 
     main(parser.parse_args())
