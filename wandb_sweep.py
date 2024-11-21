@@ -176,8 +176,8 @@ def main():
             initial_checkpoint = f"facebook/nllb-200-distilled-600m"
             wandb.init(project=f"{src_lang}-en-baseline-tune-lr-bs-ne-wd_0_1")
             wandb_sweep(
+                is_baseline=True,
                 initial_checkpoint=initial_checkpoint,
-                hub_checkpoint="facebook/nllb-200-distilled-600m",
                 src_lang=src_lang,
                 trg_lang='en',
                 expdir="WandB_Baseline_Sweep_Test_0_1"
@@ -188,8 +188,8 @@ def main():
             initial_checkpoint = f"./Experiment_1/{src_lang}-en_mode-baseline_train-True_eval-True/training_results"
             wandb.init(project=f"{src_lang}-en-experimental-tune-lr-bs-ne-wd-do-nl-dm_0_1")
             wandb_sweep(
+                is_baseline=False,
                 initial_checkpoint=initial_checkpoint,
-                hub_checkpoint="facebook/nllb-200-distilled-600m",
                 src_lang=src_lang,
                 trg_lang='en',
                 expdir="WandB_Experimental_Sweep_Test_0_1"

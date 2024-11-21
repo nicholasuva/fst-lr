@@ -765,23 +765,51 @@ def main(
             )
         print(f"EVAL_BLEU_RESULT: {results['eval_bleu']}")
     else:
-        #RUN TRAINING AND/OR EVALUATION
-        print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
-        training_pipeline(
-            initial_checkpoint=initial_checkpoint,
-            hub_checkpoint=hub_checkpoint,
-            src_lang=src_lang,
-            trg_lang=trg_lang,
-            run_baseline=run_baseline,
-            create_morph=create_morph,
-            load_morph=load_morph,
-            to_train=to_train,
-            to_eval=to_eval,
-            proportion_of_train_dataset=1.0,
-            proportion_of_test_dataset=1.0,
-            batch_size=8,
-            expdir=expdir,
-        )
+        if run_baseline:
+            #RUN BASELINE TRAINING AND/OR EVALUATION
+            print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
+            training_pipeline(
+                initial_checkpoint=initial_checkpoint,
+                hub_checkpoint=hub_checkpoint,
+                src_lang=src_lang,
+                trg_lang=trg_lang,
+                run_baseline=run_baseline,
+                create_morph=create_morph,
+                load_morph=load_morph,
+                to_train=to_train,
+                to_eval=to_eval,
+                proportion_of_train_dataset=1.0,
+                proportion_of_test_dataset=1.0,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                num_train_epochs=num_train_epochs,
+                weight_decay=weight_decay,
+                expdir=expdir,
+            )
+        else:
+            #RUN EXPERIMENTAL TRAINING AND/OR EVALUATION
+            print(f"{src_lang}-{trg_lang}_train-{to_train}_eval-{to_eval}_is-baseline-{run_baseline}")
+            training_pipeline(
+                initial_checkpoint=initial_checkpoint,
+                hub_checkpoint=hub_checkpoint,
+                src_lang=src_lang,
+                trg_lang=trg_lang,
+                run_baseline=run_baseline,
+                create_morph=create_morph,
+                load_morph=load_morph,
+                to_train=to_train,
+                to_eval=to_eval,
+                proportion_of_train_dataset=1.0,
+                proportion_of_test_dataset=1.0,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                num_train_epochs=num_train_epochs,
+                weight_decay=weight_decay,
+                morph_dropout=morph_dropout,
+                morph_d_model=morph_d_model,
+                morph_encoder_layers=morph_encoder_layers,
+                expdir=expdir,
+            )
     return
 
 
