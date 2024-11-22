@@ -185,6 +185,15 @@ def load_M2M100_model(
         model.config = M2M100Config.from_dict(config_dict)
     model.generation_config.max_length=200
     #model = M2M100ForConditionalGeneration(config)
+
+    freeze_base_encoder = True
+    if freeze_base_encoder:
+        for param in model.model.encoder.parameters():
+            param.requires_grad = False
+
+
+
+
     if False:
         peft_config = LoraConfig(
             task_type=TaskType.SEQ_2_SEQ_LM,
@@ -434,8 +443,8 @@ def training_pipeline(
     #PROPORTION OUT DATASETS
     if is_wandb_sweep:
         train_dataset=dataset_dict['dev']
-        if len(train_dataset) > 500:
-            train_dataset = train_dataset.select(range(500))
+        if len(train_dataset) > 100:
+            train_dataset = train_dataset.select(range(100))
     else:
         train_dataset=dataset_dict['train']
 

@@ -87,7 +87,7 @@ def wandb_sweep(
             command = [
                     "python3", 
                     "train_eval.py",
-                    f"--title", f"{src_lang}_wandb_sweep",
+                    f"--title", f"{src_lang}_experimental_wandb_sweep",
                     f"--src", f"{src_lang}",
                     f"--trg", f"{trg_lang}",
                     "--createmorph",
@@ -96,7 +96,7 @@ def wandb_sweep(
                     "--eval",
                     f"--expdir", f"{expdir}",
                     f"--initchkpt", f"{initial_checkpoint}",
-                    "--choosehighchkpt",
+                    #"--choosehighchkpt",
                     f"--learningrate", f"{learning_rate}",
                     f"--batchsize", f"{batch_size}",
                     f"--numtrainepochs", f"{num_train_epochs}",
@@ -166,7 +166,7 @@ def main():
 
     ######################
     #CHANGE THIS BOOLEAN TO PERFORM A BASELINE OR AN EXPERIMENTAL SWEEP
-    is_baseline = True
+    is_baseline = False
     ######################
 
     full_sweep_langs = ["so", "ba", "fo", "tt", "ga"]
@@ -174,25 +174,26 @@ def main():
         #BASELINE
         if is_baseline:
             initial_checkpoint = f"facebook/nllb-200-distilled-600m"
-            wandb.init(project=f"{src_lang}-en-baseline-tune-lr-bs-ne-wd_0_1")
+            wandb.init(project=f"{src_lang}-en-bl-tune-FROZEN-ENC_0_1")
             wandb_sweep(
                 is_baseline=True,
                 initial_checkpoint=initial_checkpoint,
                 src_lang=src_lang,
                 trg_lang='en',
-                expdir="WandB_Baseline_Sweep_Test_0_1"
+                expdir="WandB_Baseline_frozen_enc_Sweep_Test_0_1"
             )
             wandb.finish()
         #EXPERIMENTAL
         else:
-            initial_checkpoint = f"./Experiment_1/{src_lang}-en_mode-baseline_train-True_eval-True/training_results"
-            wandb.init(project=f"{src_lang}-en-experimental-tune-lr-bs-ne-wd-do-nl-dm_0_1")
+            #initial_checkpoint = f"./Experiment_1/{src_lang}-en_mode-baseline_train-True_eval-True/training_results"
+            initial_checkpoint = f"facebook/nllb-200-distilled-600m"
+            wandb.init(project=f"{src_lang}-en-exp-tune-FROZEN-ENC_0_1")
             wandb_sweep(
                 is_baseline=False,
                 initial_checkpoint=initial_checkpoint,
                 src_lang=src_lang,
                 trg_lang='en',
-                expdir="WandB_Experimental_Sweep_Test_0_1"
+                expdir="WandB_Experimental_FROZEN-ENC_Sweep_Test_0_1"
             )
             wandb.finish()
 
